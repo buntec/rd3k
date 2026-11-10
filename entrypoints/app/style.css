@@ -1,0 +1,242 @@
+/* What Astryx components don't cover: the logo, links wrapping rich content,
+   thumbnails, media, Reddit's rendered Markdown and the comment tree. Colors
+   come from the theme's tokens. */
+
+/* The shell fills the viewport and scrolls inside, so the page itself never
+   scrolls, yet macOS still rubber-bands it when the wheel is outside the
+   list. Vertical only, to keep the two-finger swipe back and forward. */
+html {
+  overscroll-behavior-y: none;
+}
+
+.logo {
+  display: block;
+  width: var(--spacing-8);
+  height: var(--spacing-8);
+}
+
+.status {
+  color: var(--color-text-secondary);
+}
+
+.status.error {
+  color: var(--color-error);
+}
+
+/* Links wrapping rich content, underlined on hover like plain links */
+.subreddit-header,
+.post-tile,
+.post-title,
+.subtle-link,
+.external-link {
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.subreddit-header:hover .subreddit-name,
+.post-tile:hover .post-title,
+.post-title:hover,
+.subtle-link:hover {
+  text-decoration: underline;
+}
+
+.external-link {
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.detail {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-0-5);
+}
+
+.score {
+  min-width: var(--spacing-8);
+  text-align: center;
+}
+
+/* Thumbnails: square crops, like Reddit's compact view */
+.post-thumbnail,
+.tile-thumbnail {
+  flex: none;
+  display: block;
+  overflow: hidden;
+  border-radius: var(--radius-container);
+  background: var(--color-background-surface);
+}
+
+.post-thumbnail {
+  width: 72px;
+  height: 72px;
+}
+
+.tile-thumbnail {
+  width: 64px;
+  height: 64px;
+}
+
+.thumbnail-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.thumbnail-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--color-text-secondary);
+}
+
+.blurred {
+  filter: blur(8px);
+}
+
+/* Media: as large as fits without pushing the comments out of view */
+.media {
+  display: block;
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.media-image,
+.media-video {
+  display: block;
+  max-width: 100%;
+  max-height: 70vh;
+  width: auto;
+  height: auto;
+  border-radius: var(--radius-container);
+  background: var(--color-background-surface);
+}
+
+.media-video {
+  width: min(100%, 900px);
+  background: #000;
+}
+
+.embed .embed-label {
+  position: absolute;
+  left: var(--spacing-2);
+  bottom: var(--spacing-2);
+  padding: var(--spacing-1) var(--spacing-2);
+  border-radius: var(--radius-container);
+  background: rgb(0 0 0 / 0.75);
+  color: #fff;
+}
+
+/* Reddit's rendering of Markdown */
+.md {
+  overflow-wrap: anywhere;
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  color: var(--color-text-primary);
+}
+
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md > :last-child {
+  margin-bottom: 0;
+}
+
+.md p,
+.md ul,
+.md ol,
+.md blockquote,
+.md pre,
+.md table {
+  margin: var(--spacing-2) 0;
+}
+
+.md ul,
+.md ol {
+  padding-left: var(--spacing-6);
+}
+
+.md ul {
+  list-style: disc;
+}
+
+.md ol {
+  list-style: decimal;
+}
+
+.md a {
+  color: var(--color-text-accent);
+}
+
+.md blockquote {
+  padding-left: var(--spacing-3);
+  border-left: 3px solid var(--color-border);
+  color: var(--color-text-secondary);
+}
+
+.md pre,
+.md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  background: var(--color-background-surface);
+  border-radius: 4px;
+}
+
+.md code {
+  padding: 0 4px;
+}
+
+.md pre {
+  padding: var(--spacing-2) var(--spacing-3);
+  overflow-x: auto;
+}
+
+.md pre code {
+  padding: 0;
+  background: none;
+}
+
+.md table {
+  border-collapse: collapse;
+}
+
+.md th,
+.md td {
+  padding: var(--spacing-1) var(--spacing-2);
+  border: 1px solid var(--color-border);
+}
+
+.md img {
+  max-width: 100%;
+}
+
+/* Spoiler text, revealed on hover or focus */
+.md .md-spoiler-text {
+  background: var(--color-text-primary);
+  border-radius: 2px;
+}
+
+.md .md-spoiler-text:hover,
+.md .md-spoiler-text:focus-within {
+  background: transparent;
+}
+
+.selftext {
+  max-width: 75ch;
+}
+
+/* The comment tree: each level of replies indented behind a line */
+.comment {
+  min-width: 0;
+}
+
+.replies {
+  margin-top: var(--spacing-2);
+  padding-left: var(--spacing-4);
+  border-left: 2px solid var(--color-border);
+}
