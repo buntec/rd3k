@@ -30,7 +30,8 @@ As of November 2026, logged in:
 - **Works:** `/api/me.json`, `/best.json`, `/r/<name>.json` (hot only),
   `/r/popular.json`, `/subreddits/mine/subscriber.json`, `/user/<me>/saved.json`,
   `/comments/<id>.json` (up to `limit=500`) and `/comments/<id>/_/<comment>.json`, and
-  the form actions `/api/vote`, `/api/save`, `/api/unsave`. None of them need the
+  the form actions `/api/vote`, `/api/save`, `/api/unsave` and `/api/subscribe` (an
+  `unsub` with `skip_initial_defaults` gets a 400). None of them need the
   Origin rewrite yt3k uses for YouTube.
 - **Blocked** with a 403 "blocked by network security" page, also in a normal tab:
   `/r/<name>/<sort>.json` (hot, new, top…), combined `/r/a+b/new.json`, `/new.json`,

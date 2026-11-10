@@ -11,6 +11,7 @@ import { Selector } from '@astryxdesign/core/Selector';
 import { HStack, StackItem, VStack } from '@astryxdesign/core/Stack';
 import { Heading, Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
+import { useToast } from '@astryxdesign/core/Toast';
 import type { NewPost, Subreddit } from '@/utils/reddit';
 import { compactNumber, countOf, fullDate, timeAgo } from '../posts/format';
 import { subredditHref, threadHref } from '../router';
@@ -260,6 +261,7 @@ const SubredditSection = memo(function SubredditSection({
 /** First click asks for confirmation, a second click within a few seconds unsubscribes. */
 function UnsubscribeButton({ subreddit }: { subreddit: Subreddit }) {
   const [state, setState] = useState<'idle' | 'confirm' | 'pending'>('idle');
+  const showToast = useToast();
 
   useEffect(() => {
     if (state !== 'confirm') return;
@@ -282,7 +284,8 @@ function UnsubscribeButton({ subreddit }: { subreddit: Subreddit }) {
           // On success the subreddit, and with it this button, goes away.
           await setSubscription(subreddit.name, false);
         } catch (err) {
-          console.error(err);
+          console.warn(err);
+          showToast({ type: 'error', body: err instanceof Error ? err.message : "That didn't work" });
           setState('idle');
         }
       }}

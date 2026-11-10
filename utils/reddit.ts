@@ -226,9 +226,29 @@ async function request(
   if (res.status === 403 && (res.headers.get('content-type') ?? '').includes('text/html')) {
     throw new BlockedError(what);
   }
-  if (res.status === 429) throw new Error(`Reddit's rate limit was reached loading ${what}`);
-  if (!res.ok) throw new Error(`Loading ${what} failed (${res.status})`);
+  const isAction = rest.method === 'POST';
+  if (res.status === 429) {
+    throw new Error(`Reddit's rate limit was reached ${isAction ? 'trying to' : 'loading'} ${what}`);
+  }
+  if (!res.ok) {
+    if (!isAction) throw new Error(`Loading ${what} failed (${res.status})`);
+    // Reddit's reason, if it gave one, for an action it refused
+    const reason = await errorReason(res);
+    throw new Error(`Couldn't ${what} (${res.status}${reason ? `: ${reason}` : ''})`);
+  }
   return res;
+}
+
+/** The message in an error response, e.g. {"message": "Bad Request", "reason": "..."} */
+async function errorReason(res: Response): Promise<string | undefined> {
+  const text = await res.text().catch(() => '');
+  try {
+    const body = JSON.parse(text) as { reason?: unknown; message?: unknown; explanation?: unknown };
+    const parts = [body.message, body.reason, body.explanation].filter((p) => typeof p === 'string' && p);
+    if (parts.length) return parts.join(', ');
+  } catch {}
+  // Plain text, not an HTML page
+  return text && !text.trimStart().startsWith('<') ? text.trim().slice(0, 200) : undefined;
 }
 
 async function getJson<T>(
@@ -339,7 +359,11 @@ export function parseSubreddit(data: SubredditData): Subreddit {
 export async function subscribe(subreddit: string, isSubscribed: boolean) {
   await action(
     '/api/subscribe',
-    { action: isSubscribed ? 'sub' : 'unsub', sr_name: subreddit, skip_initial_defaults: 'true' },
+    // skip_initial_defaults only goes with subscribing, as in other clients
+    // (e.g. PRAW); an unsubscribe that had it got a 400.
+    isSubscribed
+      ? { action: 'sub', sr_name: subreddit, skip_initial_defaults: 'true' }
+      : { action: 'unsub', sr_name: subreddit },
     isSubscribed ? `subscribe to r/${subreddit}` : `unsubscribe from r/${subreddit}`,
   );
 }

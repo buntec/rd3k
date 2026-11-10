@@ -47,6 +47,16 @@ let state: SubscriptionsState = {
 const listeners = new Set<() => void>();
 let cached: Promise<void> | undefined;
 let reloading: Promise<void> | undefined;
+/**
+ * Unsubscribed from since the page opened. A refresh under way, or Reddit's
+ * list of subscriptions before it catches up, would otherwise bring them back.
+ */
+const unsubscribed = new Set<string>();
+
+/** Without the feeds of subreddits unsubscribed from meanwhile */
+function withoutUnsubscribed(feeds: Feeds): Feeds {
+  return Object.fromEntries(Object.entries(feeds).filter(([name]) => !unsubscribed.has(name)));
+}
 
 export function useSubscriptions(): SubscriptionsState {
   void loadSubscriptions();
@@ -115,6 +125,7 @@ async function reloadNow(options: { subscriptions: boolean; force: boolean }) {
   const scheduleUpdate = () => {
     updateTimer ??= setTimeout(() => {
       updateTimer = undefined;
+      feeds = withoutUnsubscribed(feeds);
       update({ feeds: { ...feeds } });
       void feedsItem.setValue(feeds);
     }, 500);
@@ -131,7 +142,7 @@ async function reloadNow(options: { subscriptions: boolean; force: boolean }) {
     if (options.subscriptions) {
       setStatus('Loading subscriptions…');
       try {
-        const subreddits = await fetchSubscriptions();
+        const subreddits = (await fetchSubscriptions()).filter((s) => !unsubscribed.has(key(s.name)));
         await subscriptionsItem.setValue(subreddits);
         const names = new Set(subreddits.map((s) => key(s.name)));
         feeds = Object.fromEntries(Object.entries(feeds).filter(([name]) => names.has(name)));
@@ -161,6 +172,7 @@ async function reloadNow(options: { subscriptions: boolean; force: boolean }) {
     });
 
     clearTimeout(updateTimer);
+    feeds = withoutUnsubscribed(feeds);
     await feedsItem.setValue(feeds);
     update({ feeds });
     setStatus(
@@ -201,6 +213,7 @@ export function isSubscribed(name: string): boolean {
 export async function setSubscription(name: string, isSubscribedNow: boolean) {
   await setSubscribed(name, isSubscribedNow);
   if (!isSubscribedNow) {
+    unsubscribed.add(key(name));
     const subreddits = state.subreddits.filter((s) => key(s.name) !== key(name));
     const { [key(name)]: _, ...feeds } = state.feeds;
     await Promise.all([subscriptionsItem.setValue(subreddits), feedsItem.setValue(feeds)]);
@@ -208,6 +221,7 @@ export async function setSubscription(name: string, isSubscribedNow: boolean) {
     setStatus(`Unsubscribed from r/${name}`);
     return;
   }
+  unsubscribed.delete(key(name));
   void refresh(false);
 }
 
