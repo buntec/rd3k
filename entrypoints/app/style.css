@@ -1,5 +1,6 @@
-/* What Astryx components don't cover: the logo, links wrapping rich content,
-   thumbnails, media, Reddit's rendered Markdown and the comment tree. Colors
+/* What Astryx components don't cover: the thread dialog's height, the logo,
+   links wrapping rich content, thumbnails, media, Reddit's rendered Markdown
+   and the comment tree. Colors
    come from the theme's tokens. */
 
 /* The shell fills the viewport and scrolls inside, so the page itself never
@@ -7,6 +8,12 @@
    list. Vertical only, to keep the two-finger swipe back and forward. */
 html {
   overscroll-behavior-y: none;
+}
+
+/* The thread dialog keeps one height, so it doesn't jump as a thread loads
+   or when following a link to another */
+.thread-dialog {
+  height: 90dvh;
 }
 
 .logo {

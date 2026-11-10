@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useState } from 'react';
 import { ExternalLink, Link as LinkIcon, Minus, Plus } from 'lucide-react';
 import { Button } from '@astryxdesign/core/Button';
+import { DialogHeader } from '@astryxdesign/core/Dialog';
 import { Divider } from '@astryxdesign/core/Divider';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Icon } from '@astryxdesign/core/Icon';
@@ -47,10 +48,19 @@ function remember(cacheKey: string, thread: Thread) {
 }
 
 /**
- * A post with its comments: all those Reddit sends in one request, about
- * 500, or one comment's replies when `commentId` is given.
+ * A post with its comments, the content of the thread dialog: all those
+ * Reddit sends in one request, about 500, or one comment's replies when
+ * `commentId` is given.
  */
-export function ThreadPage({ postId, commentId }: { postId: string; commentId?: string }) {
+export function ThreadView({
+  postId,
+  commentId,
+  onClose,
+}: {
+  postId: string;
+  commentId?: string;
+  onClose: () => void;
+}) {
   const [sort, setSort] = useState<CommentSort>('confidence');
   const cacheKey = `${postId}/${commentId ?? ''}/${sort}`;
   const [thread, setThread] = useState<Thread | undefined>(() => cache.get(cacheKey));
@@ -99,108 +109,121 @@ export function ThreadPage({ postId, commentId }: { postId: string; commentId?: 
 
   if (error) {
     return (
-      <Layout
-        contentWidth={900}
-        content={
-          <LayoutContent padding={6}>
-            <EmptyState title="Couldn't load this thread" description={error} headingLevel={1} />
-          </LayoutContent>
-        }
-      />
+      <ThreadFrame title="Thread" onClose={onClose}>
+        <EmptyState title="Couldn't load this thread" description={error} headingLevel={1} />
+      </ThreadFrame>
     );
   }
 
   if (!thread) {
     return (
-      <Layout
-        contentWidth={900}
-        content={
-          <LayoutContent padding={6}>
-            <Text type="supporting">Loading…</Text>
-          </LayoutContent>
-        }
-      />
+      <ThreadFrame title="Thread" onClose={onClose}>
+        <Text type="supporting">Loading…</Text>
+      </ThreadFrame>
     );
   }
 
   const { post, comments } = thread;
   return (
-    <Layout
-      contentWidth={900}
-      content={
-        <LayoutContent padding={6}>
-          <VStack gap={6}>
-            <VStack as="article" gap={3}>
-              <PostDetails post={post} />
-              <HStack gap={2} vAlign="center" wrap="wrap">
-                <Heading level={1}>{post.title}</Heading>
-                {post.flair && <Token label={post.flair} size="sm" />}
-                {post.isNsfw && <Token label="NSFW" color="red" size="sm" />}
-                {post.isSpoiler && <Token label="Spoiler" size="sm" />}
-              </HStack>
-              {post.selftextHtml && (
-                <div className="selftext">
-                  <Html html={post.selftextHtml} />
-                </div>
-              )}
-              <PostMedia post={post} />
-              {!post.isSelf && post.media.kind === 'none' && (
-                <a className="external-link" href={post.url} target="_blank" rel="noopener noreferrer">
-                  <HStack gap={1} vAlign="center">
-                    <Icon icon={LinkIcon} size="sm" />
-                    <Text size="sm" color="inherit">
-                      {post.url}
-                    </Text>
-                  </HStack>
-                </a>
-              )}
-              <HStack gap={2} vAlign="center">
-                <Votes fullname={post.fullname} score={post.score} likes={post.likes} isDisabled={post.isArchived} />
-                <SaveButton fullname={post.fullname} saved={post.saved} />
-                <IconButton
-                  label="Open on Reddit"
-                  icon={<Icon icon={ExternalLink} />}
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => window.open(`https://www.reddit.com${post.permalink}`, '_blank', 'noopener')}
-                />
-                {post.isLocked && <Token label="Locked" size="sm" />}
-                {post.isArchived && <Token label="Archived" size="sm" />}
-              </HStack>
-            </VStack>
-            <Divider />
-            <HStack gap={4} vAlign="center" wrap="wrap">
-              <Heading level={2}>{countOf(post.comments, 'comment')}</Heading>
-              <StackItem size="fill" />
-              <Selector
-                label="Sort comments"
-                isLabelHidden
-                variant="secondary"
-                options={SORTS}
-                value={sort}
-                onChange={(value) => setSort(value as CommentSort)}
-              />
-            </HStack>
-            {commentId && (
-              <HStack gap={2} vAlign="center">
-                <Text type="supporting">Showing a single comment's thread.</Text>
-                <Button label="Show all comments" size="sm" variant="secondary" href={threadHref(postId)} />
-              </HStack>
-            )}
-            {comments.length === 0 ? (
-              <Text type="supporting">No comments yet</Text>
-            ) : (
-              <CommentList
-                nodes={comments}
-                postId={post.id}
-                permalink={post.permalink}
-                sort={sort}
-                onReplace={replaceComment}
-              />
-            )}
-          </VStack>
-        </LayoutContent>
+    <ThreadFrame
+      title={post.title}
+      onClose={onClose}
+      endContent={
+        <IconButton
+          label="Open on Reddit"
+          icon={<Icon icon={ExternalLink} />}
+          variant="ghost"
+          size="sm"
+          onClick={() => window.open(`https://www.reddit.com${post.permalink}`, '_blank', 'noopener')}
+        />
       }
+    >
+      <VStack gap={6}>
+        <VStack as="article" gap={3}>
+          <HStack gap={2} vAlign="center" wrap="wrap">
+            <PostDetails post={post} />
+            {post.flair && <Token label={post.flair} size="sm" />}
+            {post.isNsfw && <Token label="NSFW" color="red" size="sm" />}
+            {post.isSpoiler && <Token label="Spoiler" size="sm" />}
+          </HStack>
+          {post.selftextHtml && (
+            <div className="selftext">
+              <Html html={post.selftextHtml} />
+            </div>
+          )}
+          <PostMedia post={post} />
+          {!post.isSelf && post.media.kind === 'none' && (
+            <a className="external-link" href={post.url} target="_blank" rel="noopener noreferrer">
+              <HStack gap={1} vAlign="center">
+                <Icon icon={LinkIcon} size="sm" />
+                <Text size="sm" color="inherit">
+                  {post.url}
+                </Text>
+              </HStack>
+            </a>
+          )}
+          <HStack gap={2} vAlign="center">
+            <Votes fullname={post.fullname} score={post.score} likes={post.likes} isDisabled={post.isArchived} />
+            <SaveButton fullname={post.fullname} saved={post.saved} />
+            {post.isLocked && <Token label="Locked" size="sm" />}
+            {post.isArchived && <Token label="Archived" size="sm" />}
+          </HStack>
+        </VStack>
+        <Divider />
+        <HStack gap={4} vAlign="center" wrap="wrap">
+          <Heading level={2}>{countOf(post.comments, 'comment')}</Heading>
+          <StackItem size="fill" />
+          <Selector
+            label="Sort comments"
+            isLabelHidden
+            variant="secondary"
+            options={SORTS}
+            value={sort}
+            onChange={(value) => setSort(value as CommentSort)}
+          />
+        </HStack>
+        {commentId && (
+          <HStack gap={2} vAlign="center">
+            <Text type="supporting">Showing a single comment's thread.</Text>
+            <Button label="Show all comments" size="sm" variant="secondary" href={threadHref(postId)} />
+          </HStack>
+        )}
+        {comments.length === 0 ? (
+          <Text type="supporting">No comments yet</Text>
+        ) : (
+          <CommentList
+            nodes={comments}
+            postId={post.id}
+            permalink={post.permalink}
+            sort={sort}
+            onReplace={replaceComment}
+          />
+        )}
+      </VStack>
+    </ThreadFrame>
+  );
+}
+
+/**
+ * The dialog's frame: a header that stays while the thread scrolls under it,
+ * with the post's title and a close button. Esc and a click outside close too.
+ */
+function ThreadFrame({
+  title,
+  endContent,
+  onClose,
+  children,
+}: {
+  title: string;
+  endContent?: React.ReactNode;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Layout
+      padding={6}
+      header={<DialogHeader title={title} endContent={endContent} onOpenChange={(isOpen) => !isOpen && onClose()} />}
+      content={<LayoutContent>{children}</LayoutContent>}
     />
   );
 }
