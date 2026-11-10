@@ -306,7 +306,7 @@ function PostTile({ post }: { post: NewPost }) {
         <StackItem size="fill">
           <VStack gap={1}>
             <span className="post-title">
-              <Text weight="medium" size="sm" maxLines={3} hasTruncateTooltip={false}>
+              <Text weight="medium" maxLines={3} hasTruncateTooltip={false}>
                 {post.title}
               </Text>
             </span>
