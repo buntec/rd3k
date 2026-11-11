@@ -1,4 +1,4 @@
-import { memo, useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+import { type RefObject, memo, useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { MessageSquare } from 'lucide-react';
 import { Avatar } from '@astryxdesign/core/Avatar';
 import { Button } from '@astryxdesign/core/Button';
@@ -46,20 +46,43 @@ export function SubscriptionsPage() {
     };
   }, []);
 
-  const visible = useMemo(() => {
+  const sorted = useMemo(() => {
     const direction = sort === 'oldest' ? -1 : 1;
     const latest = (s: Subreddit) => feeds[key(s.name)]?.posts[0]?.created ?? 0;
-    return [...subreddits]
-      .sort((a, b) => {
-        // Subreddits still loading go last either way, rather than jump about
-        // at the top of the oldest first.
-        const isLoadingA = !feeds[key(a.name)];
-        const isLoadingB = !feeds[key(b.name)];
-        if (isLoadingA || isLoadingB) return Number(isLoadingA) - Number(isLoadingB);
-        return direction * (latest(b) - latest(a));
-      })
-      .filter((s) => includes(s.name) && matchesQuery(s, feeds[key(s.name)], postsPerSub, deferredQuery));
-  }, [subreddits, feeds, sort, postsPerSub, deferredQuery, includes]);
+    return [...subreddits].sort((a, b) => {
+      // Subreddits still loading go last either way, rather than jump about
+      // at the top of the oldest first.
+      const isLoadingA = !feeds[key(a.name)];
+      const isLoadingB = !feeds[key(b.name)];
+      if (isLoadingA || isLoadingB) return Number(isLoadingA) - Number(isLoadingB);
+      return direction * (latest(b) - latest(a));
+    });
+  }, [subreddits, feeds, sort]);
+
+  // While scrolled down, a refresh leaves the subreddits where they are rather
+  // than move them from under the reader; back at the top, or with another
+  // sort, they take their new places.
+  const contentRef = useRef<HTMLDivElement>(null);
+  const isAtTop = useIsScrolledToTop(contentRef);
+  const [frozen, setFrozen] = useState<{ sort: Sort; ids: string[] }>();
+  const shouldFreeze = !isAtTop && frozen?.sort === sort;
+  if (!isAtTop && frozen?.sort !== sort) {
+    setFrozen({ sort, ids: sorted.map((s) => s.id) });
+  } else if (isAtTop && frozen) {
+    setFrozen(undefined);
+  }
+  const ordered = useMemo(() => {
+    if (!shouldFreeze || !frozen) return sorted;
+    // Subscribed to meanwhile go after the rest.
+    const position = new Map(frozen.ids.map((id, i) => [id, i]));
+    const at = (s: Subreddit) => position.get(s.id) ?? position.size;
+    return [...sorted].sort((a, b) => at(a) - at(b));
+  }, [sorted, shouldFreeze, frozen]);
+
+  const visible = useMemo(
+    () => ordered.filter((s) => includes(s.name) && matchesQuery(s, feeds[key(s.name)], postsPerSub, deferredQuery)),
+    [ordered, feeds, postsPerSub, deferredQuery, includes],
+  );
 
   // Only the first subreddits render, and more as the end of the list scrolls
   // into view. A new search, group or sort starts again from the top.
@@ -74,7 +97,6 @@ export function SubscriptionsPage() {
   // Another group, e.g. picked by a subreddit's token far down the list, shows
   // from its top. Only on a change, as Activity runs effects again whenever
   // the page is shown.
-  const contentRef = useRef<HTMLDivElement>(null);
   const scrolledFilter = useRef(filter);
   useEffect(() => {
     if (scrolledFilter.current === filter) return;
@@ -174,6 +196,20 @@ const SORT_OPTIONS: { value: Sort; label: string }[] = [
   // To find the subreddits that went quiet
   { value: 'oldest', label: 'Least recently posted in first' },
 ];
+
+/** Whether the element is scrolled all the way up, or nearly. */
+function useIsScrolledToTop(ref: RefObject<HTMLElement | null>) {
+  const [isAtTop, setIsAtTop] = useState(true);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const check = () => setIsAtTop(element.scrollTop < 1);
+    check();
+    element.addEventListener('scroll', check, { passive: true });
+    return () => element.removeEventListener('scroll', check);
+  }, [ref]);
+  return isAtTop;
+}
 
 /** Shows more subreddits once the user scrolls near the end of the list. */
 function ShowMore({ shownCount, onShowMore }: { shownCount: number; onShowMore: () => void }) {
