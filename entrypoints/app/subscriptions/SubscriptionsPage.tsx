@@ -1,4 +1,4 @@
-import { type RefObject, memo, useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+import { memo, useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { MessageSquare } from 'lucide-react';
 import { Avatar } from '@astryxdesign/core/Avatar';
 import { Button } from '@astryxdesign/core/Button';
@@ -13,6 +13,7 @@ import { Heading, Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { useToast } from '@astryxdesign/core/Toast';
 import type { NewPost, Subreddit } from '@/utils/reddit';
+import { BackToTop, useIsScrolledDown } from '../BackToTop';
 import { compactNumber, countOf, fullDate, timeAgo } from '../posts/format';
 import { subredditHref, threadHref } from '../router';
 import { foldForSearch, useSearchShortcut } from '../search';
@@ -63,7 +64,7 @@ export function SubscriptionsPage() {
   // than move them from under the reader; back at the top, or with another
   // sort, they take their new places.
   const contentRef = useRef<HTMLDivElement>(null);
-  const isAtTop = useIsScrolledToTop(contentRef);
+  const isAtTop = !useIsScrolledDown(contentRef, 1);
   const [frozen, setFrozen] = useState<{ sort: Sort; ids: string[] }>();
   const shouldFreeze = !isAtTop && frozen?.sort === sort;
   if (!isAtTop && frozen?.sort !== sort) {
@@ -180,6 +181,7 @@ export function SubscriptionsPage() {
               )}
             </VStack>
           )}
+          <BackToTop scrollRef={contentRef} />
         </LayoutContent>
       }
     />
@@ -196,20 +198,6 @@ const SORT_OPTIONS: { value: Sort; label: string }[] = [
   // To find the subreddits that went quiet
   { value: 'oldest', label: 'Least recently posted in first' },
 ];
-
-/** Whether the element is scrolled all the way up, or nearly. */
-function useIsScrolledToTop(ref: RefObject<HTMLElement | null>) {
-  const [isAtTop, setIsAtTop] = useState(true);
-  useEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    const check = () => setIsAtTop(element.scrollTop < 1);
-    check();
-    element.addEventListener('scroll', check, { passive: true });
-    return () => element.removeEventListener('scroll', check);
-  }, [ref]);
-  return isAtTop;
-}
 
 /** Shows more subreddits once the user scrolls near the end of the list. */
 function ShowMore({ shownCount, onShowMore }: { shownCount: number; onShowMore: () => void }) {

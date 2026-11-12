@@ -8,6 +8,7 @@ import { HStack, StackItem, VStack } from '@astryxdesign/core/Stack';
 import { Heading, Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import type { Post, SavedComment } from '@/utils/reddit';
+import { BackToTop } from '../BackToTop';
 import { subredditHref, threadHref } from '../router';
 import { foldForSearch, useSearchShortcut } from '../search';
 import { fullDate, timeAgo } from './format';
@@ -44,6 +45,7 @@ export function PostListView<T extends ListedItem>({
   const [query, setQuery] = useState('');
   const deferredQuery = useDeferredValue(foldForSearch(query.trim()));
   const searchRef = useRef<HTMLInputElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   useSearchShortcut(searchRef);
   const matching = deferredQuery ? items.filter((item) => matchesQuery(item, deferredQuery)) : items;
 
@@ -78,7 +80,7 @@ export function PostListView<T extends ListedItem>({
         </LayoutHeader>
       }
       content={
-        <LayoutContent padding={6}>
+        <LayoutContent ref={contentRef} padding={6}>
           {items.length === 0 ? (
             loading === 'idle' && !error && <EmptyState title={empty.title} description={empty.description} headingLevel={2} />
           ) : (
@@ -117,6 +119,7 @@ export function PostListView<T extends ListedItem>({
               )}
             </VStack>
           )}
+          <BackToTop scrollRef={contentRef} />
         </LayoutContent>
       }
     />
