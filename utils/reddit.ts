@@ -720,33 +720,50 @@ interface MoreData {
 }
 
 /**
- * A post and up to about 500 of its comments, as many as Reddit sends in one
- * request: the route that loads the rest (/api/morechildren) is blocked.
+ * A post and up to `limit` of its comments, at most about 500, as many as
+ * Reddit sends in one request: the route that loads the rest
+ * (/api/morechildren) is blocked. The more comments, the longer Reddit takes:
+ * 500 from a busy thread can take seconds.
  */
-export async function fetchThread(postId: string, sort?: CommentSort): Promise<Thread> {
+export async function fetchThread(postId: string, sort?: CommentSort, limit = 500): Promise<Thread> {
   const [postPage, commentPage] = await getJson<[RawListing<PostData>, RawListing<CommentData & MoreData>]>(
     `/comments/${encodeURIComponent(postId)}.json`,
-    { limit: '500', sort },
+    { limit: String(limit), sort },
     'this thread',
   );
-  const post = postPage.data?.children?.[0];
-  if (post?.kind !== 't3') throw new Error('Reddit sent no post for this thread');
-  return { post: parsePost(post.data), comments: parseComments(commentPage) };
+  return { post: postOf(postPage), comments: parseComments(commentPage) };
 }
 
 /**
- * A comment with as many of its replies as Reddit sends, for "Continue this
- * thread" and for replies a thread left out.
+ * A post and one of its comments, with as many of its replies as Reddit
+ * sends, for permalinks, "Continue this thread" and replies a thread left out.
  */
-export async function fetchCommentTree(postId: string, commentId: string, sort?: CommentSort): Promise<Comment> {
-  const [, commentPage] = await getJson<[unknown, RawListing<CommentData & MoreData>]>(
+export async function fetchCommentThread(postId: string, commentId: string, sort?: CommentSort): Promise<Thread> {
+  const [postPage, commentPage] = await getJson<[RawListing<PostData>, RawListing<CommentData & MoreData>]>(
     `/comments/${encodeURIComponent(postId)}/_/${encodeURIComponent(commentId)}.json`,
     { limit: '500', sort },
     'these replies',
   );
   const comment = parseComments(commentPage)[0];
   if (comment?.kind !== 'comment') throw new Error('Reddit sent no comment');
-  return comment;
+  return { post: postOf(postPage), comments: [comment] };
+}
+
+/** A comment with as many of its replies as Reddit sends */
+export async function fetchCommentTree(postId: string, commentId: string, sort?: CommentSort): Promise<Comment> {
+  return (await fetchCommentThread(postId, commentId, sort)).comments[0] as Comment;
+}
+
+function postOf(page: RawListing<PostData>): Post {
+  const post = page.data?.children?.[0];
+  if (post?.kind !== 't3') throw new Error('Reddit sent no post for this thread');
+  return parsePost(post.data);
+}
+
+/** Whether a thread left out comments that a request for more would include */
+export function leavesOutComments(nodes: CommentNode[]): boolean {
+  // "Continue this thread" is for depth, which no limit changes.
+  return nodes.some((node) => (node.kind === 'more' ? !node.isContinuation : leavesOutComments(node.replies)));
 }
 
 export function parseComments(listing: RawListing<CommentData & MoreData> | '' | undefined): CommentNode[] {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { inlineImageFor, parseComments, parseNewPage, parsePost, parseSubreddit, pickSize } from './reddit';
+import { inlineImageFor, leavesOutComments, parseComments, parseNewPage, parsePost, parseSubreddit, pickSize } from './reddit';
 
 // Trimmed to the fields rd3k reads, in the shape Reddit's JSON has them.
 const base = {
@@ -167,6 +167,14 @@ describe('parseComments', () => {
 
   it('drops an empty "more" that has nothing to load', () => {
     expect(parseComments(listing({ kind: 'more', data: { id: 'x', parent_id: 't1_y', count: 0, children: ['x'] } }) as never)).toEqual([]);
+  });
+
+  it('tells whether a thread left out comments a larger limit would include', () => {
+    const more = (id: string, parent: string, count: number) => ({ kind: 'more', data: { id, parent_id: parent, count, children: [id] } });
+    const continuation = { kind: 'more', data: { id: '_', parent_id: 't1_c2', count: 0, children: [] } };
+    expect(leavesOutComments(parseComments(listing(comment('c1', listing(comment('c2', listing(continuation))))) as never))).toBe(false);
+    expect(leavesOutComments(parseComments(listing(comment('c1', listing(more('c9', 't1_c1', 3)))) as never))).toBe(true);
+    expect(leavesOutComments(parseComments(listing(comment('c1'), more('c20', 't3_p', 40)) as never))).toBe(true);
   });
 
   it('reads no replies from an empty string', () => {

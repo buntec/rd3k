@@ -17,8 +17,10 @@ import {
   type CommentSort,
   type MoreComments,
   type Thread,
+  fetchCommentThread,
   fetchCommentTree,
   fetchThread,
+  leavesOutComments,
 } from '@/utils/reddit';
 import { compactNumber, countOf, fullDate, timeAgo } from '../posts/format';
 import { Html } from '../posts/Html';
@@ -41,16 +43,64 @@ const SORTS: { value: CommentSort; label: string }[] = [
 const cache = new Map<string, Thread>();
 const CACHE_SIZE = 20;
 
+// Reddit takes seconds to send 500 comments from a busy thread, so a thread
+// shows its first comments, quick to send, while the rest load.
+const FIRST_LIMIT = 100;
+
 function remember(cacheKey: string, thread: Thread) {
   cache.delete(cacheKey);
   cache.set(cacheKey, thread);
   if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value!);
 }
 
+/** A thread loading: its first comments, then all of them */
+interface Load {
+  first: Promise<Thread>;
+  /** All the comments, which the cache holds from then on */
+  all: Promise<Thread>;
+  /** Replies loaded meanwhile, to keep in `all` */
+  replies: Map<string, Comment>;
+}
+
+// Threads loading, so a view that opens one again, e.g. reopened or mounted
+// twice by StrictMode, waits for the same requests instead of sending more.
+const loads = new Map<string, Load>();
+
+function load(cacheKey: string, postId: string, commentId: string | undefined, sort: CommentSort): Load {
+  const existing = loads.get(cacheKey);
+  if (existing) return existing;
+  const replies = new Map<string, Comment>();
+  const first = commentId ? fetchCommentThread(postId, commentId, sort) : fetchThread(postId, sort, FIRST_LIMIT);
+  const all = first.then(async (thread) => {
+    let full = thread;
+    if (hasRest(thread, commentId)) {
+      try {
+        full = await fetchThread(postId, sort);
+      } catch (err) {
+        // The first comments are still worth reading.
+        console.warn(err);
+      }
+    }
+    for (const comment of replies.values()) full = { ...full, comments: replaceIn(full.comments, comment) };
+    remember(cacheKey, full);
+    return full;
+  });
+  // Once loaded, the thread is in the cache; once failed, opening it tries again.
+  all.catch(() => {}).finally(() => loads.delete(cacheKey));
+  const started = { first, all, replies };
+  loads.set(cacheKey, started);
+  return started;
+}
+
+/** Whether a thread's first comments leave out more to load */
+function hasRest(thread: Thread, commentId: string | undefined): boolean {
+  return !commentId && leavesOutComments(thread.comments);
+}
+
 /**
  * A post with its comments, the content of the thread dialog: all those
  * Reddit sends in one request, about 500, or one comment's replies when
- * `commentId` is given.
+ * `commentId` is given. The first 100 show while the rest load.
  */
 export function ThreadView({
   postId,
@@ -65,26 +115,36 @@ export function ThreadView({
   const cacheKey = `${postId}/${commentId ?? ''}/${sort}`;
   const [thread, setThread] = useState<Thread | undefined>(() => cache.get(cacheKey));
   const [error, setError] = useState<string>();
+  const [isLoadingRest, setIsLoadingRest] = useState(false);
 
   useEffect(() => {
     const cached = cache.get(cacheKey);
     setThread(cached);
     setError(undefined);
+    setIsLoadingRest(false);
     if (cached) return;
     let isCurrent = true;
-    (async () => {
-      try {
-        const full = await fetchThread(postId, sort);
-        const loaded = commentId
-          ? { post: full.post, comments: [await fetchCommentTree(postId, commentId, sort)] }
-          : full;
-        remember(cacheKey, loaded);
-        if (isCurrent) setThread(loaded);
-      } catch (err) {
+    const { first, all } = load(cacheKey, postId, commentId, sort);
+    first.then(
+      (loaded) => {
+        if (!isCurrent) return;
+        setThread(loaded);
+        setIsLoadingRest(hasRest(loaded, commentId));
+      },
+      (err: unknown) => {
         console.warn(err);
         if (isCurrent) setError(err instanceof Error ? err.message : String(err));
-      }
-    })();
+      },
+    );
+    // Runs after `first`'s callback, which it waits for
+    all.then(
+      (loaded) => {
+        if (!isCurrent) return;
+        setThread(loaded);
+        setIsLoadingRest(false);
+      },
+      () => {},
+    );
     return () => {
       isCurrent = false;
     };
@@ -93,10 +153,13 @@ export function ThreadView({
   // Loading more replies replaces a comment with a fuller copy of itself.
   const replaceComment = useCallback(
     (comment: Comment) => {
+      const loading = loads.get(cacheKey);
+      loading?.replies.set(comment.id, comment);
       setThread((current) => {
         if (!current) return current;
         const next = { ...current, comments: replaceIn(current.comments, comment) };
-        remember(cacheKey, next);
+        // A thread still loading is remembered once it has loaded.
+        if (!loading) remember(cacheKey, next);
         return next;
       });
     },
@@ -196,6 +259,7 @@ export function ThreadView({
             postId={post.id}
             permalink={post.permalink}
             sort={sort}
+            isLoadingRest={isLoadingRest}
             onReplace={replaceComment}
           />
         )}
@@ -242,6 +306,8 @@ interface TreeProps {
   /** The post's thread on reddit.com, for what rd3k can't load */
   permalink: string;
   sort: CommentSort;
+  /** Whether the comments past the first are still loading */
+  isLoadingRest: boolean;
   onReplace: (comment: Comment) => void;
 }
 
@@ -324,7 +390,7 @@ function countReplies(comment: Comment): number {
  * comment's own thread; Reddit blocks the route that loads the rest, so
  * those at the top level link to Reddit.
  */
-function MoreButton({ more, postId, permalink, sort, onReplace }: TreeProps & { more: MoreComments }) {
+function MoreButton({ more, postId, permalink, sort, isLoadingRest, onReplace }: TreeProps & { more: MoreComments }) {
   const [state, setState] = useState<'idle' | 'loading' | 'failed'>('idle');
   const parentComment = more.parentId.startsWith('t1_') ? more.parentId.slice(3) : undefined;
   const label = more.isContinuation
@@ -332,6 +398,7 @@ function MoreButton({ more, postId, permalink, sort, onReplace }: TreeProps & { 
     : `${compactNumber(more.count)} more ${more.count === 1 ? 'reply' : 'replies'}`;
 
   if (!parentComment) {
+    if (isLoadingRest) return <Text type="supporting">Loading more comments…</Text>;
     return (
       <Button
         label={`${countOf(more.count, 'more comment')} on Reddit`}
