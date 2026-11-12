@@ -267,4 +267,7 @@ html {
   right: var(--spacing-6);
   bottom: var(--spacing-6);
   z-index: 1;
+  /* Its background is translucent: blur what scrolls under it, so the
+     arrow stands out from thumbnails and text */
+  backdrop-filter: blur(16px);
 }
