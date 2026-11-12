@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { parseComments, parseNewPage, parsePost, parseSubreddit, pickSize } from './reddit';
+import { inlineImageFor, parseComments, parseNewPage, parsePost, parseSubreddit, pickSize } from './reddit';
 
 // Trimmed to the fields rd3k reads, in the shape Reddit's JSON has them.
 const base = {
@@ -171,6 +171,49 @@ describe('parseComments', () => {
 
   it('reads no replies from an empty string', () => {
     expect(parseComments('')).toEqual([]);
+  });
+
+  it('reads the images and GIFs its Markdown shows', () => {
+    const [node] = parseComments(
+      listing({
+        ...comment('c1'),
+        data: {
+          ...comment('c1').data,
+          media_metadata: {
+            abc123: {
+              status: 'valid',
+              e: 'Image',
+              s: { u: 'https://preview.redd.it/abc123.png?width=2000&amp;s=1', x: 2000, y: 1000 },
+              p: [
+                { u: 'https://preview.redd.it/abc123.png?width=320&amp;s=2', x: 320, y: 160 },
+                { u: 'https://preview.redd.it/abc123.png?width=960&amp;s=3', x: 960, y: 480 },
+              ],
+            },
+            'giphy|xyz': {
+              status: 'valid',
+              e: 'AnimatedImage',
+              ext: 'https://giphy.com/gifs/xyz',
+              s: { gif: 'https://i.giphy.com/media/xyz/giphy.gif', x: 200, y: 100 },
+              p: [{ u: 'https://i.giphy.com/still.png', x: 100, y: 50 }],
+            },
+            pending: { status: 'unprocessed' },
+          },
+        },
+      }) as never,
+    );
+    const media = node?.kind === 'comment' ? node.media : undefined;
+    expect(media).toBeDefined();
+    if (!media) return;
+    expect(Object.keys(media)).toEqual(['abc123', 'giphy|xyz']);
+    expect(inlineImageFor('https://preview.redd.it/abc123.png?width=640&format=png&s=x', media)?.image).toEqual({
+      url: 'https://preview.redd.it/abc123.png?width=960&s=3',
+      width: 960,
+      height: 480,
+    });
+    expect(inlineImageFor('https://giphy.com/gifs/xyz', media)?.image.url).toBe('https://i.giphy.com/media/xyz/giphy.gif');
+    expect(inlineImageFor('https://giphy.com/gifs/funny-cat-xyz', media)?.image.url).toBe('https://i.giphy.com/media/xyz/giphy.gif');
+    expect(inlineImageFor('https://preview.redd.it/other.png', media)).toBeUndefined();
+    expect(inlineImageFor('https://example.com/abc123.png', media)).toBeUndefined();
   });
 });
 

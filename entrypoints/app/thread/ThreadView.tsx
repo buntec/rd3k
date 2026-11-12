@@ -148,7 +148,7 @@ export function ThreadView({
           </HStack>
           {post.selftextHtml && (
             <div className="selftext">
-              <Html html={post.selftextHtml} />
+              <Html html={post.selftextHtml} media={post.selftextMedia} />
             </div>
           )}
           <PostMedia post={post} />
@@ -296,7 +296,7 @@ const CommentView = memo(function CommentView({ comment, ...props }: TreeProps &
     <div className="comment">
       <VStack gap={1}>
         {author}
-        <Html html={comment.bodyHtml} />
+        <Html html={comment.bodyHtml} media={comment.media} />
         <HStack gap={1} vAlign="center">
           <Votes fullname={comment.fullname} score={comment.score} likes={comment.likes} isScoreHidden={comment.isScoreHidden} />
           <SaveButton fullname={comment.fullname} saved={comment.saved} />

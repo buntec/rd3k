@@ -213,7 +213,7 @@ function SavedCommentRow({ comment }: { comment: SavedComment }) {
             </Text>
           </HStack>
           <div className="selftext">
-            <Html html={comment.bodyHtml} />
+            <Html html={comment.bodyHtml} media={comment.media} />
           </div>
         </VStack>
       }

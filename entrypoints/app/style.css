@@ -222,6 +222,19 @@ html {
   max-width: 100%;
 }
 
+/* Images shown in place of the links Reddit renders for them */
+.md .md-image {
+  display: inline-block;
+}
+
+.md .md-image img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-height: min(60vh, 32rem);
+  border-radius: var(--radius-inner);
+}
+
 /* Spoiler text, revealed on hover or focus */
 .md .md-spoiler-text {
   background: var(--color-text-primary);

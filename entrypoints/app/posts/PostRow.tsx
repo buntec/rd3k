@@ -7,7 +7,7 @@ import { ListItem } from '@astryxdesign/core/List';
 import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
 import { Token } from '@astryxdesign/core/Token';
-import type { Post } from '@/utils/reddit';
+import type { InlineMedia, Post } from '@/utils/reddit';
 import { subredditHref, threadHref } from '../router';
 import { countOf, fullDate, timeAgo } from './format';
 import { Html } from './Html';
@@ -149,16 +149,16 @@ export function PostDetails({ post, showSubreddit = true }: { post: Post; showSu
 function ExpandedContent({ post }: { post: Post }) {
   return (
     <VStack gap={3}>
-      {post.selftextHtml && <SelfText html={post.selftextHtml} />}
+      {post.selftextHtml && <SelfText html={post.selftextHtml} media={post.selftextMedia} />}
       <PostMedia post={post} />
     </VStack>
   );
 }
 
-function SelfText({ html }: { html: string }) {
+function SelfText({ html, media }: { html: string; media?: InlineMedia }) {
   return (
     <div className="selftext">
-      <Html html={html} />
+      <Html html={html} media={media} />
     </div>
   );
 }

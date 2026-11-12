@@ -69,6 +69,8 @@ export interface Post {
   isSelf: boolean;
   /** Sanitize before showing: it's Reddit's rendering of user Markdown. */
   selftextHtml?: string;
+  /** Images the self text shows */
+  selftextMedia?: InlineMedia;
   flair?: string;
   isNsfw: boolean;
   isSpoiler: boolean;
@@ -84,6 +86,18 @@ export interface Post {
   crosspostFrom?: string;
 }
 
+/**
+ * Images and GIFs a post's or comment's Markdown shows, by media id: Reddit's
+ * HTML has only links to them. See `inlineImageFor`.
+ */
+export type InlineMedia = Record<string, InlineImage>;
+
+export interface InlineImage {
+  image: Image;
+  /** For GIPHY GIFs, the page the HTML links to */
+  link?: string;
+}
+
 export interface Comment {
   kind: 'comment';
   id: string;
@@ -91,6 +105,7 @@ export interface Comment {
   author: string;
   /** Sanitize before showing */
   bodyHtml: string;
+  media?: InlineMedia;
   score: number;
   isScoreHidden: boolean;
   created: number;
@@ -129,6 +144,7 @@ export interface SavedComment {
   fullname: string;
   author: string;
   bodyHtml: string;
+  media?: InlineMedia;
   score: number;
   created: number;
   subreddit: string;
@@ -468,16 +484,71 @@ interface PostData {
     reddit_video_preview?: RedditVideo;
   };
   gallery_data?: { items?: { media_id: string; caption?: string }[] } | null;
-  media_metadata?: Record<
-    string,
-    {
-      status?: string;
-      e?: string;
-      s?: { u?: string; gif?: string; mp4?: string; x: number; y: number };
-      p?: { u: string; x: number; y: number }[];
-    }
-  > | null;
+  media_metadata?: MediaMetadata | null;
   crosspost_parent_list?: PostData[];
+}
+
+type MediaMetadata = Record<
+  string,
+  {
+    status?: string;
+    /** "Image" or "AnimatedImage" */
+    e?: string;
+    /** For GIPHY GIFs, the page on giphy.com */
+    ext?: string;
+    s?: { u?: string; gif?: string; mp4?: string; x: number; y: number };
+    p?: { u: string; x: number; y: number }[];
+  }
+>;
+
+/** About as wide as a comment gets */
+const INLINE_WIDTH = 640;
+
+function inlineMediaOf(metadata: MediaMetadata | null | undefined): InlineMedia | undefined {
+  if (!metadata) return undefined;
+  const media: InlineMedia = {};
+  for (const [id, meta] of Object.entries(metadata)) {
+    if (!meta.s || meta.status !== 'valid') continue;
+    let image: Image | undefined;
+    // An animated image's smaller sizes are stills.
+    if (meta.e === 'AnimatedImage' && meta.s.gif) image = toImage({ u: meta.s.gif, x: meta.s.x, y: meta.s.y });
+    else if (meta.s.u) {
+      const sizes = [...(meta.p ?? []), meta.s].filter((s) => s.u).map((s) => toImage(s));
+      image = pickSize(sizes, INLINE_WIDTH);
+    }
+    if (image) media[id] = { image, link: meta.ext ? cleanUrl(meta.ext) : undefined };
+  }
+  return Object.keys(media).length ? media : undefined;
+}
+
+/**
+ * The image a link in Reddit's HTML stands for: Markdown images render as
+ * links to preview.redd.it or i.redd.it, named by media id, and GIPHY GIFs
+ * as links to their page.
+ */
+export function inlineImageFor(href: string, media: InlineMedia): InlineImage | undefined {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return undefined;
+  }
+  if (url.hostname === 'preview.redd.it' || url.hostname === 'i.redd.it') {
+    const id = url.pathname.slice(1).replace(/\.\w+$/, '');
+    return Object.hasOwn(media, id) ? media[id] : undefined;
+  }
+  const giphy = url.hostname.endsWith('giphy.com') && /^\/gifs\/(?:.*-)?([^/-]+)\/?$/.exec(url.pathname)?.[1];
+  return Object.entries(media).find(
+    ([id, item]) => (item.link && sameUrl(item.link, url)) || (giphy && (id === `giphy|${giphy}` || id.startsWith(`giphy|${giphy}|`))),
+  )?.[1];
+}
+
+function sameUrl(a: string, b: URL): boolean {
+  try {
+    return new URL(a).href.replace(/\/$/, '') === b.href.replace(/\/$/, '');
+  } catch {
+    return false;
+  }
 }
 
 export function parsePost(data: PostData): Post {
@@ -498,6 +569,7 @@ export function parsePost(data: PostData): Post {
     domain: data.domain ?? '',
     isSelf: data.is_self === true,
     selftextHtml: data.selftext_html ?? undefined,
+    selftextMedia: data.selftext_html ? inlineMediaOf(data.media_metadata) : undefined,
     flair: data.link_flair_text || undefined,
     isNsfw: data.over_18 === true,
     isSpoiler: data.spoiler === true,
@@ -621,6 +693,7 @@ interface CommentData {
   name: string;
   author: string;
   body_html?: string;
+  media_metadata?: MediaMetadata | null;
   score: number;
   score_hidden?: boolean;
   created_utc: number;
@@ -696,6 +769,7 @@ export function parseComments(listing: RawListing<CommentData & MoreData> | '' |
         fullname: c.name,
         author: c.author,
         bodyHtml: c.body_html ?? '',
+        media: inlineMediaOf(c.media_metadata),
         score: c.score,
         isScoreHidden: c.score_hidden === true,
         created: c.created_utc * 1000,
@@ -720,6 +794,7 @@ function parseSavedComment(c: CommentData): SavedComment {
     fullname: c.name,
     author: c.author,
     bodyHtml: c.body_html ?? '',
+    media: inlineMediaOf(c.media_metadata),
     score: c.score,
     created: c.created_utc * 1000,
     subreddit: c.subreddit ?? '',
