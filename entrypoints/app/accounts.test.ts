@@ -8,6 +8,7 @@ const reddit = vi.hoisted(() => ({
   fetchAccount: vi.fn<() => Promise<Account | undefined>>(),
   fetchSubscriptions: vi.fn<(signal?: AbortSignal) => Promise<Subreddit[]>>(),
   fetchNewPosts: vi.fn<(name: string, options?: { signal?: AbortSignal }) => Promise<NewPost[]>>(),
+  subscribe: vi.fn<(name: string, isSubscribed: boolean) => Promise<void>>(),
 }));
 
 vi.mock('@/utils/reddit', async (importOriginal) => ({
@@ -117,6 +118,67 @@ describe('subscriptions', () => {
   });
 });
 
+describe('subscriptions, continued', () => {
+  it('store no feeds before Reddit confirms the account again, while they load', async () => {
+    localStorage.setItem('account', 'Alice');
+    reddit.fetchAccount.mockResolvedValue(alice);
+    reddit.fetchSubscriptions.mockResolvedValue([sub('pics'), sub('cats')]);
+    const cats = deferred<NewPost[]>();
+    reddit.fetchNewPosts.mockImplementation((name) => (name === 'cats' ? cats.promise : Promise.resolve([])));
+    const { store } = await openPage();
+
+    await store.loadSubscriptions();
+    await vi.waitFor(() => expect(store.isSubscribed('pics')).toBe(true));
+    await new Promise((r) => setTimeout(r, 700));
+    expect(await storage.getItem('local:feeds:alice')).toBeNull();
+
+    cats.resolve([]);
+    await vi.waitFor(async () => expect(await storage.getItem('local:feeds:alice')).not.toBeNull());
+  });
+
+  it("don't (un)subscribe, nor store it, when Reddit is logged in as another account now", async () => {
+    localStorage.setItem('account', 'Alice');
+    reddit.fetchAccount.mockResolvedValue(alice);
+    reddit.fetchSubscriptions.mockResolvedValue([sub('pics')]);
+    const { store } = await openPage();
+    await store.loadSubscriptions();
+    await vi.waitFor(async () => expect(await storage.getItem('local:subscriptions:alice')).toEqual([sub('pics')]));
+
+    reddit.fetchAccount.mockResolvedValue(bob);
+    await expect(store.setSubscription('pics', false)).rejects.toThrow('account changed');
+    expect(reddit.subscribe).not.toHaveBeenCalled();
+    expect(await storage.getItem('local:subscriptions:alice')).toEqual([sub('pics')]);
+  });
+
+  it("show an error, not logged out, when Reddit can't be asked on a first visit", async () => {
+    await storage.setItem('local:subscriptions:alice', [sub('pics')]);
+    reddit.fetchAccount.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(alice);
+    reddit.fetchSubscriptions.mockResolvedValue([sub('pics')]);
+    const { account, store } = await openPage();
+
+    const shown = await store.loadSubscriptions();
+    expect(shown.status).toEqual({ text: "Couldn't reach Reddit: offline", isError: true });
+
+    // Coming back to the tab
+    await account.confirmAccount();
+    await vi.waitFor(() => expect(store.isSubscribed('pics')).toBe(true));
+  });
+});
+
+describe('the account', () => {
+  it('is checked once for any number of views, until coming back to the page', async () => {
+    reddit.fetchAccount.mockResolvedValue(alice);
+    const { account } = await openPage();
+    await account.loadAccount();
+    for (let i = 0; i < 5; i++) account.watchAccount(() => {})();
+    expect(reddit.fetchAccount).toHaveBeenCalledTimes(1);
+
+    // Earlier tests' pages listen on the same window too, so only "again" is certain.
+    window.dispatchEvent(new Event('focus'));
+    await vi.waitFor(() => expect(reddit.fetchAccount.mock.calls.length).toBeGreaterThan(1));
+  });
+});
+
 describe('groups', () => {
   it("can't be changed until Reddit confirms the account they're of", async () => {
     localStorage.setItem('account', 'Alice');
@@ -198,6 +260,36 @@ describe('data stored before accounts were kept apart', () => {
 
     expect(await storage.getItem('local:groups:alice')).toEqual({ groups: [group('Tech')] });
     expect(await storage.getItem('local:groups:bob')).toBeNull();
+    expect(await storage.getItem('local:groups')).toBeNull();
+  });
+
+  it("isn't lost when moving it fails at first: no groups are stored for the account till it's moved", async () => {
+    await storage.setItem('local:groups', { groups: [group('Tech')] });
+    localStorage.setItem('account', 'Alice');
+    reddit.fetchAccount.mockResolvedValue(alice);
+    // Moving fails once, e.g. on a storage error, with the account confirmed
+    const locks = navigator.locks;
+    let fails = 1;
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: {
+        request: (name: string, fn: () => Promise<unknown>) =>
+          fails-- > 0 ? Promise.reject(new Error('lock failed')) : locks.request(name, fn),
+      },
+    });
+    const { account, groups } = await openPage();
+
+    void groups.loadGroups();
+    await account.loadAccount();
+    await vi.waitFor(() => expect(fails).toBeLessThan(1));
+    await new Promise((r) => setTimeout(r, 50));
+    // Stored now, a group would have the move skip the old ones, then drop them.
+    expect(groups.groupsNow().isLoaded).toBe(false);
+    expect(groups.createGroup(groups.groupsNow().session, 'News', 'red')).toBe(false);
+
+    // Coming back to the tab tries again.
+    await account.confirmAccount();
+    await vi.waitFor(() => expect(groups.groupsNow().groups.map((g) => g.name)).toEqual(['Tech']));
     expect(await storage.getItem('local:groups')).toBeNull();
   });
 

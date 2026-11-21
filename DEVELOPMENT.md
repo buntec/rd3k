@@ -34,7 +34,8 @@ confirmed the account, before the request and again before writing. Work started
 for one account must not land in another's after a switch. The stores have a
 session per account; lists and threads count switches with the account generation.
 `moveUnkeyedData()` moves data from before per-account storage to a single owner
-account, recorded in storage.
+account, recorded in storage. Stores open an account's data only after it's done
+(`untilMoved()`).
 `request()` follows Reddit's `x-ratelimit-*` headers and waits for a reset when
 requests run low, keeping a reserve for the user's own clicks.
 

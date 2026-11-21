@@ -17,6 +17,7 @@ let loading: Promise<void> | undefined;
 /** Checks started, and the latest of them whose answer was taken */
 let checks = 0;
 let applied = 0;
+let firstCheck: Promise<Account | null> | undefined;
 
 // The account's name as last confirmed, kept across visits in localStorage
 // so the data stored for it can show before Reddit confirms it again. It's
@@ -71,6 +72,20 @@ export function confirmAccount(): Promise<Account | null> {
   return check();
 }
 
+/**
+ * The account Reddit confirmed, waiting for its first answer if there's none
+ * yet, which callers share. Unlike loadAccount(), throws if Reddit couldn't
+ * be asked rather than resolve as if logged out.
+ */
+export async function loadConfirmedAccount(): Promise<Account | null> {
+  if (account !== undefined) return account;
+  start();
+  firstCheck ??= check().finally(() => {
+    firstCheck = undefined;
+  });
+  return firstCheck;
+}
+
 /** The account Reddit last confirmed: undefined until it has, null when logged out */
 export function confirmedAccount(): Account | null | undefined {
   return account;
@@ -106,7 +121,9 @@ export function useAccountGeneration(): number {
 /** Calls `onChange` whenever Reddit answers a check, whether or not the account changed. */
 export function watchAccount(onChange: () => void) {
   start();
-  loading ??= load();
+  // Only until known: later checks come on coming back to the page, not
+  // with every view that shows the account.
+  if (account === undefined) loading ??= load();
   listeners.add(onChange);
   return () => listeners.delete(onChange);
 }
@@ -134,7 +151,8 @@ function start() {
 }
 
 function load(): Promise<void> {
-  return check()
+  // The first check is shared with loadConfirmedAccount().
+  return (account === undefined ? loadConfirmedAccount() : check())
     .then(
       () => {},
       // Keep showing what was known before.
@@ -159,7 +177,9 @@ async function check(): Promise<Account | null> {
 function apply(next: Account | null) {
   account = next;
   const nextName = next?.name ?? null;
-  if (keyOf(nextName) !== keyOf(name)) {
+  // A first answer counts as a change even if it's "logged out", so stores
+  // waiting for one open.
+  if (name === undefined || keyOf(nextName) !== keyOf(name)) {
     const previous = name;
     name = nextName;
     storeName(nextName);

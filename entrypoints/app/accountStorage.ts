@@ -1,4 +1,4 @@
-import { accountKey, confirmAccount } from './account';
+import { accountKey, confirmAccount, watchAccount } from './account';
 
 type LocalKey = `local:${string}`;
 
@@ -18,25 +18,47 @@ const UNKEYED_LOCAL = ['groupFilter'];
 const OWNER_KEY: LocalKey = 'local:unkeyedOwner';
 const LOCK = 'rd3k-unkeyed-data';
 
-let moving: Promise<void> | undefined;
+let moving: Promise<boolean> | undefined;
 
 /**
  * Moves what was stored before rd3k kept data per account to the account
  * that was logged in then, as far as anyone can tell: the first one Reddit
- * confirms. Stores wait for it before reading an account's data. While
+ * confirms. Resolves whether it's done, i.e. nothing is left to move. While
  * logged out, or if it fails, it's left for the next call to try.
  */
-export function moveUnkeyedData(): Promise<void> {
-  moving ??= move().then(
-    (isDone) => {
-      if (!isDone) moving = undefined;
-    },
-    (err: unknown) => {
+export function moveUnkeyedData(): Promise<boolean> {
+  moving ??= move()
+    .catch((err: unknown) => {
       console.warn(err);
-      moving = undefined;
-    },
-  );
+      return false;
+    })
+    .then((isDone) => {
+      if (!isDone) moving = undefined;
+      return isDone;
+    });
   return moving;
+}
+
+/**
+ * Waits until moveUnkeyedData() is done, trying again whenever Reddit answers
+ * an account check, e.g. on coming back to the tab. Stores wait for it before
+ * opening an account's data: changes stored before would make the move skip
+ * the old data, then drop it. `onWaiting` is called on failing. Resolves false
+ * once `isWanted()` says the data isn't wanted any more, e.g. after a switch.
+ */
+export async function untilMoved(isWanted: () => boolean, onWaiting?: () => void): Promise<boolean> {
+  while (isWanted()) {
+    if (await moveUnkeyedData()) return isWanted();
+    if (!isWanted()) return false;
+    onWaiting?.();
+    await new Promise<void>((resolve) => {
+      const stop = watchAccount(() => {
+        stop();
+        resolve();
+      });
+    });
+  }
+  return false;
 }
 
 /** Whether there's nothing left to move */

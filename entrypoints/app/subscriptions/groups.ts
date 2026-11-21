@@ -1,6 +1,6 @@
 import { useMemo, useSyncExternalStore } from 'react';
-import { accountName, confirmedAccount, keyOf, loadAccount, onAccountChange, watchAccount } from '../account';
-import { keyFor, moveUnkeyedData } from '../accountStorage';
+import { accountName, confirmedAccount, keyOf, loadConfirmedAccount, onAccountChange, watchAccount } from '../account';
+import { keyFor, untilMoved } from '../accountStorage';
 
 /** The colors a group can have: those both Badge and Token come in. */
 export const GROUP_COLORS = ['red', 'orange', 'yellow', 'green', 'teal', 'cyan', 'blue', 'purple', 'pink'] as const;
@@ -97,7 +97,15 @@ function load(): Promise<void> {
     watchAccount(() => session && publish(session, state.groups, state.isLoaded));
     // The account last seen's groups right away, as they're only stored here
     let name = accountName();
-    if (name === undefined) name = (await loadAccount())?.name ?? null;
+    if (name === undefined) {
+      try {
+        name = (await loadConfirmedAccount())?.name ?? null;
+      } catch (err) {
+        // Not known to be logged out: Reddit's first answer opens the session.
+        console.warn(err);
+        return;
+      }
+    }
     // Unless Reddit reported an account meanwhile
     if (!session) await open(name);
   })();
@@ -114,8 +122,11 @@ async function open(name: string | null) {
   openFilter(account);
   // Logged out, there's nowhere to keep groups: they stay unloaded.
   if (!account) return;
-  await moveUnkeyedData();
-  if (s !== session) return;
+  // Not before data from earlier versions moved here: groups stored now would
+  // have it skip the old ones, then drop them.
+  if (!(await untilMoved(() => s === session))) return;
+  // Moving may have brought the filter chosen then.
+  openFilter(account, true);
   const item = storage.defineItem<StoredGroups>(keyFor(BASE_KEY, account), { fallback: { groups: [] } });
   // Follow changes made in other tabs. Storage reports writes in the order
   // it makes them, ours too, which are shown already.
@@ -350,9 +361,9 @@ export function setGroupFilter(value: GroupFilter) {
   for (const listener of filterListeners) listener();
 }
 
-/** Shows the filter last chosen with the account. */
-function openFilter(account: string | null) {
-  if (account === filterAccount) return;
+/** Shows the filter last chosen with the account, or read again if `force`. */
+function openFilter(account: string | null, force = false) {
+  if (account === filterAccount && !force) return;
   filterAccount = account;
   filter = storedFilter(account);
   for (const listener of filterListeners) listener();
@@ -389,7 +400,7 @@ function subscribeToFilter(onChange: () => void) {
 function storedFilter(account: string | null | undefined): GroupFilter {
   if (!account) return 'all';
   try {
-    return localStorage.getItem(filterKey(account)) ?? localStorage.getItem(FILTER_KEY) ?? 'all';
+    return localStorage.getItem(filterKey(account)) ?? 'all';
   } catch {
     return 'all';
   }

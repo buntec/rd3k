@@ -8,8 +8,8 @@ import {
   onRateLimitWait,
   subscribe as setSubscribed,
 } from '@/utils/reddit';
-import { accountName, confirmAccount, keyOf, loadAccount, onAccountChange } from '../account';
-import { keyFor, moveUnkeyedData } from '../accountStorage';
+import { accountName, confirmAccount, keyOf, loadConfirmedAccount, onAccountChange } from '../account';
+import { keyFor, untilMoved } from '../accountStorage';
 
 export interface Feed {
   fetchedAt: number;
@@ -31,6 +31,9 @@ export interface SubscriptionsState {
 export const key = (name: string) => name.toLowerCase();
 
 const FEED_MAX_AGE = 15 * 60 * 1000;
+// Feeds loaded so far are stored at most this often during a refresh, each
+// time once Reddit confirms the account, so closing the page keeps most.
+const CHECKPOINT_INTERVAL = 30 * 1000;
 // Each subreddit is one page request, which Reddit allows about 600 of per
 // 10 minutes. A few at a time stays well clear of tripping anything else.
 const CONCURRENT_REQUESTS = 4;
@@ -107,9 +110,24 @@ async function load() {
   // Show what's stored for the account last seen right away; refreshing waits
   // until Reddit confirms it.
   let name = accountName();
-  if (name === undefined) name = (await loadAccount())?.name ?? null;
+  if (name === undefined) {
+    try {
+      name = (await loadConfirmedAccount())?.name ?? null;
+    } catch (err) {
+      // Not known to be logged out: Reddit's first answer opens the session.
+      if (!session) {
+        state = { ...state, status: { text: `Couldn't reach Reddit: ${errorText(err)}`, isError: true } };
+        for (const listener of listeners) listener();
+      }
+      return;
+    }
+  }
   // Unless Reddit reported an account meanwhile
   if (!session) await open(name);
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** Shows the subscriptions stored for the account, then brings them up to date. */
@@ -124,8 +142,13 @@ async function open(name: string | null) {
     setStatus(s, LOGGED_OUT_STATUS, true);
     return;
   }
-  await moveUnkeyedData();
-  if (s !== session) return;
+  // Not before data from earlier versions moved here, which a change stored
+  // now would have it skip
+  const isMoved = await untilMoved(
+    () => s === session,
+    () => setStatus(s, "Couldn't load what's stored for this account. Trying again on coming back to the tab.", true),
+  );
+  if (!isMoved) return;
   const items = {
     subscriptions: storage.defineItem<Subreddit[]>(keyFor('local:subscriptions', account), { fallback: [] }),
     feeds: storage.defineItem<Feeds>(keyFor('local:feeds', account), { fallback: {}, version: 1 }),
@@ -175,21 +198,37 @@ async function reloadNow(s: Session, options: { subscriptions: boolean; force: b
   // Leave the page alone when there's nothing to do, as on most timed updates.
   if (!options.subscriptions && staleSubreddits(false).length === 0) return;
   const { signal } = s.abort;
+  // Put back if the refresh gives up without a word, e.g. on a switch
+  const statusBefore = state.status;
+  let isFinished = false;
   update(s, { isRefreshing: true });
   // Mutated as feeds arrive and published in batches by scheduleUpdate().
   let feeds = state.feeds;
   let updateTimer: ReturnType<typeof setTimeout> | undefined;
   let progress = '';
+  let checkpointAt = Date.now();
 
-  /** Re-render and persist progress at most every half second while loading. */
+  /** Re-render at most every half second while loading, and now and then store what's loaded. */
   const scheduleUpdate = () => {
     updateTimer ??= setTimeout(() => {
       updateTimer = undefined;
       if (s !== session) return;
       feeds = withoutUnsubscribed(s, feeds);
       update(s, { feeds: { ...feeds } });
-      void items.feeds.setValue(feeds);
+      if (Date.now() - checkpointAt >= CHECKPOINT_INTERVAL) {
+        checkpointAt = Date.now();
+        void checkpoint({ ...feeds });
+      }
     }, 500);
+  };
+
+  /** Stores the feeds loaded so far, once Reddit confirms they're the account's. */
+  const checkpoint = async (loaded: Feeds) => {
+    try {
+      if (!signal.aborted && (await isCurrent(s))) await items.feeds.setValue(loaded);
+    } catch (err) {
+      console.warn(err);
+    }
   };
 
   // Reddit's rate limit pauses requests until it resets; say so rather than
@@ -254,17 +293,14 @@ async function reloadNow(s: Session, options: { subscriptions: boolean; force: b
       `${state.subreddits.length} subreddits` + (failed ? ` · ${failed} failed to load` : ''),
       failed > 0 && failed === stale.length,
     );
+    isFinished = true;
   } catch (err) {
-    clearTimeout(updateTimer);
-    setStatus(
-      s,
-      err instanceof NotLoggedInError ? LOGGED_OUT_STATUS : err instanceof Error ? err.message : String(err),
-      true,
-    );
+    setStatus(s, err instanceof NotLoggedInError ? LOGGED_OUT_STATUS : errorText(err), true);
+    isFinished = true;
   } finally {
     clearTimeout(updateTimer);
     stopWatching();
-    update(s, { isRefreshing: false });
+    update(s, isFinished ? { isRefreshing: false } : { isRefreshing: false, status: statusBefore });
   }
 }
 
@@ -284,21 +320,37 @@ export function isSubscribed(name: string): boolean {
  * subscription shows up with its posts. Throws if Reddit refuses.
  */
 export async function setSubscription(name: string, isSubscribedNow: boolean) {
+  void loadSubscriptions();
   const s = session;
+  // Not waiting for it, which may take until Reddit can be reached
+  if (!s) throw new Error('Still finding out which Reddit account this is. Try again in a moment.');
+  if (!s.account) throw new NotLoggedInError();
+  // Reddit (un)subscribes whichever account it's logged in as, which may
+  // have changed on reddit.com since the page last looked.
+  if (!(await isCurrent(s))) {
+    throw new Error("The Reddit account changed since this page last looked, so nothing changed. Try again.");
+  }
   await setSubscribed(name, isSubscribedNow);
   // Switched accounts meanwhile: the new one's list is loaded anew anyway.
-  if (!s?.items || s !== session) return;
-  if (!isSubscribedNow) {
-    s.unsubscribed.add(key(name));
-    const subreddits = state.subreddits.filter((sub) => key(sub.name) !== key(name));
-    const { [key(name)]: _, ...feeds } = state.feeds;
-    await Promise.all([s.items.subscriptions.setValue(subreddits), s.items.feeds.setValue(feeds)]);
-    update(s, { subreddits, feeds });
-    setStatus(s, `Unsubscribed from r/${name}`);
+  if (s !== session) return;
+  // Kept even while the stored list is still opening, which reloads it then
+  if (isSubscribedNow) s.unsubscribed.delete(key(name));
+  else s.unsubscribed.add(key(name));
+  const { items } = s;
+  if (!items) return;
+  if (isSubscribedNow) {
+    void reload(s, { subscriptions: true, force: false });
     return;
   }
-  s.unsubscribed.delete(key(name));
-  void reload(s, { subscriptions: true, force: false });
+  const subreddits = state.subreddits.filter((sub) => key(sub.name) !== key(name));
+  const { [key(name)]: _, ...feeds } = state.feeds;
+  update(s, { subreddits, feeds });
+  setStatus(s, `Unsubscribed from r/${name}`);
+  // Stored once Reddit confirms the account it unsubscribed; else the next
+  // refresh brings the stored list up to date.
+  if (await isCurrent(s).catch(() => false)) {
+    await Promise.all([items.subscriptions.setValue(subreddits), items.feeds.setValue(feeds)]);
+  }
 }
 
 async function forEachConcurrently<T>(items: T[], limit: number, fn: (item: T) => Promise<void>) {
