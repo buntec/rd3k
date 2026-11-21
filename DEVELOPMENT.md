@@ -22,28 +22,11 @@ For Firefox, `npm run dev:firefox` and `npm run build:firefox` write
 `.output/firefox-mv3-dev` and `.output/firefox-mv3`. Load one via `about:debugging` →
 **This Firefox** → **Load Temporary Add-on** → its `manifest.json`.
 
-## What Reddit allows
+## Talking to Reddit
 
 Everything goes through `utils/reddit.ts`, with the browser's Reddit login cookies.
-As of November 2026, logged in:
-
-- **Works:** `/api/me.json`, `/best.json`, `/r/<name>.json` (hot only),
-  `/r/popular.json`, `/subreddits/mine/subscriber.json`, `/user/<me>/saved.json`,
-  `/comments/<id>.json` (up to `limit=500`) and `/comments/<id>/_/<comment>.json`, and
-  the form actions `/api/vote`, `/api/save`, `/api/unsave` and `/api/subscribe` (an
-  `unsub` with `skip_initial_defaults` gets a 400). None of them need the
-  Origin rewrite yt3k uses for YouTube.
-- **Blocked** with a 403 "blocked by network security" page, also in a normal tab:
-  `/r/<name>/<sort>.json` (hot, new, top…), combined `/r/a+b/new.json`, `/new.json`,
-  `/by_id/`, `/api/morechildren`, subreddit search, and old Reddit's `/new.json`.
-  `?sort=new` on a listing is silently ignored.
-- **Subs** therefore reads each subreddit's newest posts from its web page,
-  `/r/<name>/new/`, whose `<shreddit-post>` elements carry the post's data as
-  attributes. Only the first few posts are in the page; the rest load on scroll.
-- **Rate limits:** JSON requests share about 100 per 10 minutes; web pages count
-  separately, about 600. `request()` tracks both from Reddit's `x-ratelimit-*`
-  headers and waits for a reset when they run low, keeping a reserve for the user's
-  own clicks.
+`request()` follows Reddit's `x-ratelimit-*` headers and waits for a reset when
+requests run low, keeping a reserve for the user's own clicks.
 
 ## Tests and tooling
 

@@ -9,7 +9,7 @@ describe('groups files', () => {
   });
 
   it("reject what isn't one", () => {
-    expect(() => parseGroupsFile('{"format":"yt3k-groups-1","groups":[]}')).toThrow('Not a groups file');
+    expect(() => parseGroupsFile('{"format":"other-groups-1","groups":[]}')).toThrow('Not a groups file');
     expect(() => parseGroupsFile('[]')).toThrow();
   });
 });
