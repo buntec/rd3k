@@ -1,20 +1,20 @@
 # rd3k
 
-A decluttered Reddit UI as a browser extension for Firefox, Chrome, Edge and other
-Chromium browsers. Rather than altering reddit.com, its toolbar button opens a page
-of its own, logged in with the Reddit account you use in that browser.
+A decluttered Reddit client as a browser extension for Firefox and Chromium browsers
+(Chrome, Edge, etc.). Instead of modifying reddit.com, clicking the toolbar button
+opens a standalone page using your existing browser login.
 
-- **Subs**: your subscriptions, the one posted in most recently first, each with its
-  newest posts. Sort subreddits into colored groups and filter by them; groups can be
-  exported and imported.
-- **Feed**: your home feed (Best), without ads, with **Hide**.
-- **Popular**: r/popular.
-- **Saved**: the posts and comments you saved.
-- **Threads**: a post with its media (images, galleries, Reddit videos with sound)
-  and up to about 500 comments, collapsible, with **Continue this thread**.
+- **Subs**: Your subscriptions sorted by most recent activity, each showing its newest
+  posts. Organize and filter subreddits with color-coded groups (exportable and
+  importable).
+- **Feed**: Your ad-free home feed (Best), with post hiding.
+- **Popular**: `r/popular`.
+- **Saved**: Your saved posts and comments.
+- **Threads**: Posts with inline media (images, galleries, Reddit videos with sound)
+  and collapsible comments (up to ~500, with **Continue this thread**).
 
-Vote and save anywhere, subscribe from a subreddit's page, and search what's loaded
-with `/`.
+Vote and save anywhere, subscribe from subreddit pages, and press `/` to search loaded
+content.
 
 ## Install
 
