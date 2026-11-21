@@ -16,6 +16,10 @@ opens a standalone page using your existing browser login.
 Vote and save anywhere, subscribe from subreddit pages, and press `/` to search loaded
 content.
 
+Logged in to more than one Reddit account? rd3k uses the one reddit.com has active:
+switch accounts there and rd3k follows, with each account's subscriptions and groups
+kept apart.
+
 ## Install
 
 Download a build from the [releases](https://github.com/buntec/rd3k/releases):

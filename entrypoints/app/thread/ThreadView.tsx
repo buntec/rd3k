@@ -22,6 +22,7 @@ import {
   fetchThread,
   leavesOutComments,
 } from '@/utils/reddit';
+import { onAccountChange, useAccountGeneration } from '../account';
 import { compactNumber, countOf, fullDate, timeAgo } from '../posts/format';
 import { Html } from '../posts/Html';
 import { PostMedia } from '../posts/PostMedia';
@@ -46,6 +47,15 @@ const CACHE_SIZE = 20;
 // Reddit takes seconds to send 500 comments from a busy thread, so a thread
 // shows its first comments, quick to send, while the rest load.
 const FIRST_LIMIT = 100;
+
+// Votes and saves are the account's: switching accounts loads threads again.
+// Keys hold the account generation, so loads under way then don't count,
+// and the app opens the view anew, so nothing still loading for the old
+// account, e.g. more replies, lands in the new one's thread.
+onAccountChange((_name, previous) => {
+  // A first confirmation: loaded with the account's login all along
+  if (previous !== undefined) cache.clear();
+});
 
 function remember(cacheKey: string, thread: Thread) {
   cache.delete(cacheKey);
@@ -112,7 +122,8 @@ export function ThreadView({
   onClose: () => void;
 }) {
   const [sort, setSort] = useState<CommentSort>('confidence');
-  const cacheKey = `${postId}/${commentId ?? ''}/${sort}`;
+  const generation = useAccountGeneration();
+  const cacheKey = `${generation}/${postId}/${commentId ?? ''}/${sort}`;
   const [thread, setThread] = useState<Thread | undefined>(() => cache.get(cacheKey));
   const [error, setError] = useState<string>();
   const [isLoadingRest, setIsLoadingRest] = useState(false);

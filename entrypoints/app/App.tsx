@@ -7,7 +7,7 @@ import { Text } from '@astryxdesign/core/Text';
 import { Theme } from '@astryxdesign/core/theme';
 import { TopNav, TopNavHeading, TopNavItem } from '@astryxdesign/core/TopNav';
 import { defaultThemeSlug, themes } from '@/astryx-themes';
-import { AccountStatus } from './account';
+import { AccountStatus, useAccountGeneration } from './account';
 import { FeedPage, PopularPage } from './feed/FeedPage';
 import { PAGES, type PageRoute, type Route, closeThread, routeHref, useAppLocation } from './router';
 import { SavedPage } from './saved/SavedPage';
@@ -24,6 +24,7 @@ export function App() {
   // A thread opens in a dialog over `page`, the page it was opened from.
   const { route, page } = useAppLocation();
   const mode = useThemeMode();
+  const accountGeneration = useAccountGeneration();
   // Subs stays mounted, hidden, once shown: rendering its hundreds of posts
   // again takes long enough to notice on every return from another page.
   const [keepSubs, setKeepSubs] = useState(page.page === 'subs');
@@ -93,7 +94,8 @@ export function App() {
       >
         {route.page === 'thread' && (
           <ThreadView
-            key={`${route.postId}/${route.commentId}`}
+            // Opened anew on switching accounts, whose votes and saves it shows
+            key={`${accountGeneration}/${route.postId}/${route.commentId}`}
             postId={route.postId}
             commentId={route.commentId}
             onClose={closeThread}
