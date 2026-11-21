@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { ExternalLink, Link as LinkIcon, Minus, Plus } from 'lucide-react';
 import { Button } from '@astryxdesign/core/Button';
 import { DialogHeader } from '@astryxdesign/core/Dialog';
@@ -22,6 +22,7 @@ import {
   fetchThread,
   leavesOutComments,
 } from '@/utils/reddit';
+import { onAccountChange } from '../account';
 import { compactNumber, countOf, fullDate, timeAgo } from '../posts/format';
 import { Html } from '../posts/Html';
 import { PostMedia } from '../posts/PostMedia';
@@ -46,6 +47,28 @@ const CACHE_SIZE = 20;
 // Reddit takes seconds to send 500 comments from a busy thread, so a thread
 // shows its first comments, quick to send, while the rest load.
 const FIRST_LIMIT = 100;
+
+// Votes and saves are the account's: switching accounts loads threads again.
+// Keys hold the count of switches, so loads under way then don't count.
+let switches = 0;
+const switchListeners = new Set<() => void>();
+onAccountChange((_name, previous) => {
+  // A first confirmation: loaded with the account's login all along
+  if (previous === undefined) return;
+  switches++;
+  cache.clear();
+  for (const listener of switchListeners) listener();
+});
+
+function useSwitches(): number {
+  return useSyncExternalStore(
+    (onChange) => {
+      switchListeners.add(onChange);
+      return () => switchListeners.delete(onChange);
+    },
+    () => switches,
+  );
+}
 
 function remember(cacheKey: string, thread: Thread) {
   cache.delete(cacheKey);
@@ -112,7 +135,8 @@ export function ThreadView({
   onClose: () => void;
 }) {
   const [sort, setSort] = useState<CommentSort>('confidence');
-  const cacheKey = `${postId}/${commentId ?? ''}/${sort}`;
+  const switchCount = useSwitches();
+  const cacheKey = `${switchCount}/${postId}/${commentId ?? ''}/${sort}`;
   const [thread, setThread] = useState<Thread | undefined>(() => cache.get(cacheKey));
   const [error, setError] = useState<string>();
   const [isLoadingRest, setIsLoadingRest] = useState(false);

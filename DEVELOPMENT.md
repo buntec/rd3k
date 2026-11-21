@@ -25,6 +25,9 @@ For Firefox, `npm run dev:firefox` and `npm run build:firefox` write
 ## Talking to Reddit
 
 Everything goes through `utils/reddit.ts`, with the browser's Reddit login cookies.
+The account is whichever one reddit.com has active. `entrypoints/app/account.tsx`
+checks it again whenever the page regains focus and reports switches. Stored
+subscriptions, feeds and groups are kept per account (`local:groups:<name>`, etc.).
 `request()` follows Reddit's `x-ratelimit-*` headers and waits for a reset when
 requests run low, keeping a reserve for the user's own clicks.
 

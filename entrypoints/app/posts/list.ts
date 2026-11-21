@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import type { Listing } from '@/utils/reddit';
+import { onAccountChange } from '../account';
 
 export interface ListState<T> {
   items: T[];
@@ -33,6 +34,19 @@ export function createList<T extends { fullname: string }>(
   let state: ListState<T> = { items: [], loading: 'idle', removals: {} };
   const listeners = new Set<() => void>();
   let isStale = true;
+  /** Counts account switches, which make loads under way of no use */
+  let generation = 0;
+
+  // Votes, saves and hidden posts are the account's, and so is the feed:
+  // switching accounts loads the list again, now if it's shown.
+  onAccountChange((_name, previous) => {
+    // A first confirmation: loaded with the account's login all along
+    if (previous === undefined) return;
+    generation++;
+    state = { items: [], loading: 'idle', removals: {} };
+    if (listeners.size) void list.refresh();
+    else isStale = true;
+  });
 
   const subscribe = (onChange: () => void) => {
     listeners.add(onChange);
@@ -69,13 +83,15 @@ export function createList<T extends { fullname: string }>(
     async refresh() {
       if (state.loading !== 'idle') return;
       update({ loading: 'refresh', error: undefined });
+      const loading = generation;
       try {
         const page = await load();
+        if (loading !== generation) return;
         update({ items: page.items, after: page.after, removals: {}, removalError: undefined });
       } catch (err) {
-        update({ error: errorMessage(err) });
+        if (loading === generation) update({ error: errorMessage(err) });
       } finally {
-        update({ loading: 'idle' });
+        if (loading === generation) update({ loading: 'idle' });
       }
     },
 
@@ -83,17 +99,19 @@ export function createList<T extends { fullname: string }>(
     async loadMore() {
       if (state.loading !== 'idle' || !state.after) return;
       update({ loading: 'more', error: undefined });
+      const loading = generation;
       try {
         const page = await load(state.after);
+        if (loading !== generation) return;
         const seen = new Set(state.items.map((item) => item.fullname));
         update({
           items: [...state.items, ...page.items.filter((item) => !seen.has(item.fullname))],
           after: page.after,
         });
       } catch (err) {
-        update({ error: errorMessage(err) });
+        if (loading === generation) update({ error: errorMessage(err) });
       } finally {
-        update({ loading: 'idle' });
+        if (loading === generation) update({ loading: 'idle' });
       }
     },
 

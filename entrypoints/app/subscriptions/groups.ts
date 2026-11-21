@@ -1,4 +1,6 @@
 import { useMemo, useSyncExternalStore } from 'react';
+import { accountKey, accountName, loadAccount, onAccountChange } from '../account';
+import { adoptUnkeyed, keyFor } from '../accountStorage';
 
 /** The colors a group can have: those both Badge and Token come in. */
 export const GROUP_COLORS = ['red', 'orange', 'yellow', 'green', 'teal', 'cyan', 'blue', 'purple', 'pink'] as const;
@@ -21,7 +23,8 @@ export type GroupFilter = 'all' | 'ungrouped' | (string & {});
 
 // Extension storage like the subscriptions, unlike the display settings in
 // localStorage: losing groups to cleared site data would lose real work.
-const groupsItem = storage.defineItem<StoredGroups>('local:groups', { fallback: { groups: [] } });
+// Each account has its own, as it has its own subscriptions.
+const BASE_KEY = 'local:groups';
 
 interface StoredGroups {
   groups: Group[];
@@ -38,14 +41,23 @@ export interface GroupsState {
   isLoaded: boolean;
 }
 
+/** The groups of one account, or none while logged out */
+interface Session {
+  /** As accountKey() makes it, or null when logged out */
+  account: string | null;
+  item?: WxtStorageItem<StoredGroups, {}>;
+  unwatch?: () => void;
+  /** This page's writes that storage is yet to report back */
+  pending: Set<number>;
+}
+
 let state: GroupsState = { groups: [], isLoaded: false };
+let session: Session | undefined;
 const listeners = new Set<() => void>();
 let loading: Promise<void> | undefined;
 /** This page, among those writing groups */
 const page = crypto.randomUUID();
 let writes = 0;
-/** This page's writes that storage is yet to report back */
-const pending = new Set<number>();
 
 export function useGroups(): GroupsState {
   void load();
@@ -54,22 +66,59 @@ export function useGroups(): GroupsState {
 
 function load(): Promise<void> {
   loading ??= (async () => {
-    // Follow changes made in other tabs. Storage reports writes in the order
-    // it makes them, ours too, which are shown already.
-    groupsItem.watch((value) => {
-      if (value.writer?.page === page) {
-        for (const write of pending) if (write <= value.writer.write) pending.delete(write);
-        return;
-      }
-      // Made before a write of ours still to come, which replaces it
-      if (pending.size) return;
-      publish(value.groups);
-    });
-    const stored = await groupsItem.getValue();
-    // Unless a change reported meanwhile showed later ones
-    if (!state.isLoaded) publish(stored.groups);
+    onAccountChange((name) => void open(name));
+    // The account last seen's groups right away, as they're only stored here
+    let name = accountName();
+    if (name === undefined) name = (await loadAccount())?.name ?? null;
+    // Unless Reddit reported an account meanwhile
+    if (!session) await open(name);
   })();
   return loading;
+}
+
+async function open(name: string | null) {
+  const account = name && accountKey(name);
+  if (session && session.account === account) return;
+  session?.unwatch?.();
+  const s: Session = { account, pending: new Set() };
+  session = s;
+  publish(s, [], false);
+  openFilter(account);
+  if (!account) {
+    publish(s, []);
+    return;
+  }
+  await adoptUnkeyedGroups(account);
+  if (s !== session) return;
+  const item = storage.defineItem<StoredGroups>(keyFor(BASE_KEY, account), { fallback: { groups: [] } });
+  s.item = item;
+  // Follow changes made in other tabs. Storage reports writes in the order
+  // it makes them, ours too, which are shown already.
+  s.unwatch = item.watch((value) => {
+    if (value.writer?.page === page) {
+      for (const write of s.pending) if (write <= value.writer.write) s.pending.delete(write);
+      return;
+    }
+    // Made before a write of ours still to come, which replaces it
+    if (s.pending.size) return;
+    publish(s, value.groups);
+  });
+  const stored = await item.getValue();
+  // Unless a change reported meanwhile showed later ones
+  if (!state.isLoaded) publish(s, stored.groups);
+}
+
+/** Gives the account the groups from before each account had its own, and the filter chosen then. */
+async function adoptUnkeyedGroups(account: string) {
+  await adoptUnkeyed(BASE_KEY, account);
+  try {
+    const unkeyed = localStorage.getItem(FILTER_KEY);
+    if (unkeyed === null) return;
+    if (localStorage.getItem(filterKey(account)) === null) localStorage.setItem(filterKey(account), unkeyed);
+    localStorage.removeItem(FILTER_KEY);
+  } catch (err) {
+    console.warn(err);
+  }
 }
 
 function subscribe(onChange: () => void) {
@@ -77,23 +126,30 @@ function subscribe(onChange: () => void) {
   return () => listeners.delete(onChange);
 }
 
-function publish(groups: Group[]) {
-  state = { groups: [...groups].sort((a, b) => a.name.localeCompare(b.name)), isLoaded: true };
+/** Shows the groups, unless `s` is an account's switched away from. */
+function publish(s: Session, groups: Group[], isLoaded = true) {
+  if (s !== session) return;
+  state = { groups: [...groups].sort((a, b) => a.name.localeCompare(b.name)), isLoaded };
   for (const listener of listeners) listener();
 }
 
 function save(groups: Group[]) {
-  publish(groups);
+  const s = session;
+  if (!s) return;
+  publish(s, groups);
+  const { item } = s;
+  // Logged out, there's nowhere to keep them; the page has nothing to group then.
+  if (!item) return;
   const write = ++writes;
-  pending.add(write);
-  groupsItem.setValue({ groups: state.groups, writer: { page, write } }).catch(async (err) => {
+  s.pending.add(write);
+  item.setValue({ groups: state.groups, writer: { page, write } }).catch(async (err) => {
     console.warn(err);
-    pending.delete(write);
+    s.pending.delete(write);
     // Show what's stored instead, which changes from other tabs held back
     // for this write may have changed
-    if (pending.size) return;
-    const stored = await groupsItem.getValue();
-    if (!pending.size) publish(stored.groups);
+    if (s.pending.size) return;
+    const stored = await item.getValue();
+    if (!s.pending.size) publish(s, stored.groups);
   });
 }
 
@@ -219,10 +275,14 @@ export function importGroups(text: string) {
 }
 
 // The filter is a display setting: in localStorage, so the page has it on
-// first render. It's read once rather than following other tabs, which can
-// show other groups.
+// first render, one per account like the groups. It's read once rather than
+// following other tabs, which can show other groups.
 const FILTER_KEY = 'groupFilter';
-let filter = storedFilter();
+const filterKey = (account: string) => `${FILTER_KEY}:${account}`;
+const initialName = accountName();
+/** The account the filter is of, as accountKey() makes it */
+let filterAccount = initialName && accountKey(initialName);
+let filter = storedFilter(filterAccount);
 const filterListeners = new Set<() => void>();
 
 export function useGroupFilter(): GroupFilter {
@@ -231,12 +291,21 @@ export function useGroupFilter(): GroupFilter {
 
 export function setGroupFilter(value: GroupFilter) {
   filter = value;
+  const account = session?.account;
   try {
-    if (value === 'all') localStorage.removeItem(FILTER_KEY);
-    else localStorage.setItem(FILTER_KEY, value);
+    if (account && value === 'all') localStorage.removeItem(filterKey(account));
+    else if (account) localStorage.setItem(filterKey(account), value);
   } catch (err) {
     console.warn(err);
   }
+  for (const listener of filterListeners) listener();
+}
+
+/** Shows the filter last chosen with the account. */
+function openFilter(account: string | null) {
+  if (account === filterAccount) return;
+  filterAccount = account;
+  filter = storedFilter(account);
   for (const listener of filterListeners) listener();
 }
 
@@ -268,9 +337,10 @@ function subscribeToFilter(onChange: () => void) {
   return () => filterListeners.delete(onChange);
 }
 
-function storedFilter(): GroupFilter {
+function storedFilter(account: string | null | undefined): GroupFilter {
+  if (!account) return 'all';
   try {
-    return localStorage.getItem(FILTER_KEY) ?? 'all';
+    return localStorage.getItem(filterKey(account)) ?? localStorage.getItem(FILTER_KEY) ?? 'all';
   } catch {
     return 'all';
   }
