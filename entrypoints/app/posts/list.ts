@@ -129,14 +129,18 @@ export function createList<T extends { fullname: string }>(
       { send, ...removal }: Omit<Removal, 'status'> & { send: () => Promise<void> },
     ) {
       if (state.removals[fullname]) return;
-      setRemoval(fullname, { ...removal, status: 'sending' });
+      const at = generation;
+      const sending: Removal = { ...removal, status: 'sending' };
+      setRemoval(fullname, sending);
       update({ removalError: undefined });
       try {
         await send();
         // Unless a refresh replaced the list in the meantime
-        if (state.removals[fullname]) setRemoval(fullname, { ...removal, status: 'sent' });
+        if (state.removals[fullname] === sending) setRemoval(fullname, { ...removal, status: 'sent' });
       } catch (err) {
-        setRemoval(fullname, undefined);
+        // Switched accounts meanwhile: the list and its removals are the new account's.
+        if (at !== generation) return void console.warn(err);
+        if (state.removals[fullname] === sending) setRemoval(fullname, undefined);
         update({ removalError: `That didn't work: ${errorMessage(err)}` });
       }
     },
@@ -145,13 +149,16 @@ export function createList<T extends { fullname: string }>(
     async undoRemoval(fullname: string) {
       const removal = state.removals[fullname];
       if (removal?.status !== 'sent' || !removal.undo) return;
-      setRemoval(fullname, { ...removal, status: 'undoing' });
+      const at = generation;
+      const undoing: Removal = { ...removal, status: 'undoing' };
+      setRemoval(fullname, undoing);
       update({ removalError: undefined });
       try {
         await removal.undo();
-        setRemoval(fullname, undefined);
+        if (state.removals[fullname] === undoing) setRemoval(fullname, undefined);
       } catch (err) {
-        if (state.removals[fullname]) setRemoval(fullname, removal);
+        if (at !== generation) return void console.warn(err);
+        if (state.removals[fullname] === undoing) setRemoval(fullname, removal);
         update({ removalError: `Undo didn't work: ${errorMessage(err)}` });
       }
     },

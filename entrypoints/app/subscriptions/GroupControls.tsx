@@ -32,6 +32,7 @@ import {
   editGroup,
   exportGroups,
   importGroups,
+  onSessionEnd,
   nameProblem,
   restoreGroup,
   setGroupFilter,
@@ -43,7 +44,7 @@ import {
 
 /** The page's sidebar: all subreddits, those in no group, and each group. */
 export function GroupsNav({ subreddits, filter }: { subreddits: Subreddit[]; filter: GroupFilter }) {
-  const { groups } = useGroups();
+  const { groups, session, isEditable } = useGroups();
   const showToast = useToast();
   // The group being edited, or null for a new one
   const [editing, setEditing] = useState<Group | null>();
@@ -60,7 +61,7 @@ export function GroupsNav({ subreddits, filter }: { subreddits: Subreddit[]; fil
   }, [subreddits, groups]);
 
   const remove = (group: Group) => {
-    deleteGroup(group.id);
+    if (!deleteGroup(session, group.id)) return;
     if (filter === group.id) setGroupFilter('all');
     const hide = showToast({
       body: `Deleted ${group.name}`,
@@ -74,11 +75,13 @@ export function GroupsNav({ subreddits, filter }: { subreddits: Subreddit[]; fil
           variant="ghost"
           onClick={() => {
             hide();
-            restoreGroup(group);
+            restoreGroup(session, group);
           }}
         />
       ),
     });
+    // Its Undo would do nothing once the account's switched.
+    onSessionEnd(session, hide);
   };
 
   const download = () => {
@@ -102,7 +105,12 @@ export function GroupsNav({ subreddits, filter }: { subreddits: Subreddit[]; fil
       if (!file) return;
       const before = groups;
       try {
-        importGroups(await file.text());
+        // The file was picked while another account's groups showed, if
+        // the account switched meanwhile.
+        if (!importGroups(session, await file.text())) {
+          showToast({ type: 'error', body: `The Reddit account changed, so ${file.name} wasn't imported` });
+          return;
+        }
       } catch (err) {
         console.warn(err);
         showToast({ type: 'error', body: `${file.name} isn't a groups file` });
@@ -119,11 +127,12 @@ export function GroupsNav({ subreddits, filter }: { subreddits: Subreddit[]; fil
             variant="ghost"
             onClick={() => {
               hide();
-              setGroups(before);
+              setGroups(session, before);
             }}
           />
         ),
       });
+      onSessionEnd(session, hide);
     };
     input.click();
   };
@@ -164,6 +173,7 @@ export function GroupsNav({ subreddits, filter }: { subreddits: Subreddit[]; fil
                     label: 'Import groups…',
                     icon: Upload,
                     description: 'Adds to the groups here',
+                    isDisabled: !isEditable,
                     onClick: upload,
                   },
                 ]}
@@ -174,6 +184,7 @@ export function GroupsNav({ subreddits, filter }: { subreddits: Subreddit[]; fil
                 icon={<Icon icon={Plus} />}
                 variant="ghost"
                 size="sm"
+                isDisabled={!isEditable}
                 onClick={() => setEditing(null)}
               />
             </HStack>
@@ -191,11 +202,12 @@ export function GroupsNav({ subreddits, filter }: { subreddits: Subreddit[]; fil
                   label={`${group.name} options`}
                   alignment="end"
                   items={[
-                    { label: 'Edit', icon: Pencil, onClick: () => setEditing(group) },
+                    { label: 'Edit', icon: Pencil, isDisabled: !isEditable, onClick: () => setEditing(group) },
                     {
                       label: 'Delete',
                       icon: Trash2,
                       variant: 'destructive',
+                      isDisabled: !isEditable,
                       onClick: () => remove(group),
                     },
                   ]}
@@ -231,16 +243,25 @@ function GroupDialog({
   const [color, setColor] = useState<GroupColor>(group?.color ?? unusedColor);
   const [problem, setProblem] = useState<string>();
   const nameRef = useRef<HTMLInputElement>(null);
+  const { session } = useGroups();
+  const [openedIn] = useState(session);
 
   // The dialog focuses its title, which hasAutoFocus doesn't win over; this
   // runs after it, the dialog's effects running before its parent's.
   useEffect(() => nameRef.current?.focus(), []);
 
+  // Switching accounts closes it: the group was the other account's.
+  useEffect(() => {
+    if (session !== openedIn) onClose();
+  }, [session, openedIn, onClose]);
+
   const submit = () => {
     const problem = nameProblem(name, group?.id);
     if (problem) return setProblem(problem);
-    if (group) editGroup(group.id, { name, color });
-    else createGroup(name, color, subreddits);
+    const isSaved = group
+      ? editGroup(openedIn, group.id, { name, color })
+      : createGroup(openedIn, name, color, subreddits);
+    if (!isSaved) return setProblem("Groups can't be changed until Reddit confirms the account");
     onClose();
   };
 
@@ -296,7 +317,7 @@ function GroupDialog({
 
 /** A menu of the groups to check the subreddit in or out of, and to create one. */
 export function AddToGroupButton({ subreddit }: { subreddit: string }) {
-  const { groups } = useGroups();
+  const { groups, session, isEditable } = useGroups();
   const [isCreating, setIsCreating] = useState(false);
   return (
     <>
@@ -310,11 +331,17 @@ export function AddToGroupButton({ subreddit }: { subreddit: string }) {
             key={group.id}
             label={<Token label={group.name} color={group.color} size="sm" />}
             value={group.subreddits.includes(key(subreddit))}
-            onChange={(isIn) => setInGroup(group.id, subreddit, isIn)}
+            isDisabled={!isEditable}
+            onChange={(isIn) => setInGroup(session, group.id, subreddit, isIn)}
           />
         ))}
         {groups.length > 0 && <DropdownMenuDivider />}
-        <DropdownMenuItem label="New group…" icon={Plus} onClick={() => setIsCreating(true)} />
+        <DropdownMenuItem
+          label="New group…"
+          icon={Plus}
+          isDisabled={!isEditable}
+          onClick={() => setIsCreating(true)}
+        />
       </DropdownMenu>
       {isCreating && (
         <GroupDialog subreddits={[key(subreddit)]} onClose={() => setIsCreating(false)} />

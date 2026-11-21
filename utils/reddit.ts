@@ -202,13 +202,25 @@ const RESERVE: Record<Bucket, number> = { json: 10, page: 20 };
  * Waits until the bucket has room. Background work (`isBackground`) leaves
  * the reserve alone, so the user's own clicks still go through right away.
  */
-async function waitForRoom(bucket: Bucket, isBackground: boolean) {
+async function waitForRoom(bucket: Bucket, isBackground: boolean, signal?: AbortSignal | null) {
+  signal?.throwIfAborted();
   const { remaining, resetAt } = buckets[bucket];
   if (remaining === undefined || resetAt === undefined) return;
   const floor = isBackground ? RESERVE[bucket] : 0;
   if (remaining > floor || Date.now() >= resetAt) return;
   rateLimitListeners.forEach((listener) => listener(bucket, resetAt));
-  await new Promise((resolve) => setTimeout(resolve, resetAt - Date.now() + 1000));
+  // Given up on while waiting, it never sends.
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, resetAt - Date.now() + 1000);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 const rateLimitListeners = new Set<(bucket: Bucket, resetAt: number) => void>();
@@ -236,7 +248,7 @@ async function request(
   init: RequestInit & { bucket: Bucket; isBackground?: boolean; what: string },
 ): Promise<Response> {
   const { bucket, isBackground = false, what, ...rest } = init;
-  await waitForRoom(bucket, isBackground);
+  await waitForRoom(bucket, isBackground, rest.signal);
   const res = await fetch(ORIGIN + path, { credentials: 'include', cache: 'no-store', ...rest });
   track(bucket, res);
   if (res.status === 403 && (res.headers.get('content-type') ?? '').includes('text/html')) {
@@ -272,10 +284,11 @@ async function getJson<T>(
   params: Record<string, string | undefined>,
   what: string,
   isBackground = false,
+  signal?: AbortSignal,
 ): Promise<T> {
   const query = new URLSearchParams({ raw_json: '1' });
   for (const [key, value] of Object.entries(params)) if (value !== undefined) query.set(key, value);
-  const res = await request(`${path}?${query}`, { bucket: 'json', what, isBackground });
+  const res = await request(`${path}?${query}`, { bucket: 'json', what, isBackground, signal });
   return res.json() as Promise<T>;
 }
 
@@ -344,8 +357,8 @@ interface SubredditData {
   over18?: boolean;
 }
 
-/** All subreddits the user is subscribed to, sorted by name */
-export async function fetchSubscriptions(): Promise<Subreddit[]> {
+/** All subreddits the user is subscribed to, sorted by name. `signal` gives up on them. */
+export async function fetchSubscriptions(signal?: AbortSignal): Promise<Subreddit[]> {
   const subs: Subreddit[] = [];
   let after: string | undefined;
   do {
@@ -353,6 +366,8 @@ export async function fetchSubscriptions(): Promise<Subreddit[]> {
       '/subreddits/mine/subscriber.json',
       { limit: '100', after },
       'your subscriptions',
+      false,
+      signal,
     );
     for (const child of page.data?.children ?? []) subs.push(parseSubreddit(child.data));
     after = page.data?.after ?? undefined;
@@ -844,11 +859,15 @@ export interface NewPost {
  * Reddit blocks /r/<name>/new.json, but not the page, whose requests also
  * count against the larger rate limit. The page holds only the first few.
  */
-export async function fetchNewPosts(subreddit: string, isBackground = true): Promise<NewPost[]> {
+export async function fetchNewPosts(
+  subreddit: string,
+  { isBackground = true, signal }: { isBackground?: boolean; signal?: AbortSignal } = {},
+): Promise<NewPost[]> {
   const res = await request(`/r/${encodeURIComponent(subreddit)}/new/`, {
     bucket: 'page',
     what: `r/${subreddit}`,
     isBackground,
+    signal,
   });
   // A subreddit that's gone, private or renamed sends the user elsewhere.
   if (res.redirected && !new URL(res.url).pathname.toLowerCase().startsWith(`/r/${subreddit.toLowerCase()}`)) {

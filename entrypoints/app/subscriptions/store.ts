@@ -8,8 +8,8 @@ import {
   onRateLimitWait,
   subscribe as setSubscribed,
 } from '@/utils/reddit';
-import { accountKey, accountName, loadAccount, onAccountChange } from '../account';
-import { adoptUnkeyed, keyFor } from '../accountStorage';
+import { accountName, confirmAccount, keyOf, loadAccount, onAccountChange } from '../account';
+import { keyFor, moveUnkeyedData } from '../accountStorage';
 
 export interface Feed {
   fetchedAt: number;
@@ -50,6 +50,8 @@ interface Session {
    */
   unsubscribed: Set<string>;
   reloading?: Promise<void>;
+  /** Gives up on the session's requests, including those waiting for the rate limit, on switching accounts */
+  abort: AbortController;
 }
 
 const EMPTY: SubscriptionsState = {
@@ -112,23 +114,38 @@ async function load() {
 
 /** Shows the subscriptions stored for the account, then brings them up to date. */
 async function open(name: string | null) {
-  const account = name && accountKey(name);
+  const account = keyOf(name);
   if (session && session.account === account) return;
-  const s: Session = { account, unsubscribed: new Set() };
+  session?.abort.abort();
+  const s: Session = { account, unsubscribed: new Set(), abort: new AbortController() };
   session = s;
   update(s, EMPTY);
   if (!account) {
     setStatus(s, LOGGED_OUT_STATUS, true);
     return;
   }
-  await Promise.all([adoptUnkeyed('local:subscriptions', account), adoptUnkeyed('local:feeds', account)]);
-  s.items = {
+  await moveUnkeyedData();
+  if (s !== session) return;
+  const items = {
     subscriptions: storage.defineItem<Subreddit[]>(keyFor('local:subscriptions', account), { fallback: [] }),
     feeds: storage.defineItem<Feeds>(keyFor('local:feeds', account), { fallback: {}, version: 1 }),
   };
-  const [subreddits, feeds] = await Promise.all([s.items.subscriptions.getValue(), s.items.feeds.getValue()]);
+  const [subreddits, feeds] = await Promise.all([items.subscriptions.getValue(), items.feeds.getValue()]);
+  if (s !== session) return;
+  s.items = items;
   update(s, { subreddits, feeds });
   void reload(s, { subscriptions: true, force: false });
+}
+
+/**
+ * Whether the browser is still logged in as the session's account, asking
+ * Reddit now: what Reddit sends is the account it's logged in as, which
+ * may have changed on reddit.com since the session started. Throws if Reddit
+ * couldn't be asked.
+ */
+async function isCurrent(s: Session): Promise<boolean> {
+  const confirmed = await confirmAccount();
+  return s === session && keyOf(confirmed?.name) === s.account;
 }
 
 /**
@@ -153,12 +170,11 @@ function reload(s: Session, options: { subscriptions: boolean; force: boolean })
 }
 
 async function reloadNow(s: Session, options: { subscriptions: boolean; force: boolean }) {
-  // Before Reddit confirms the account, the stored data may be another's.
-  await loadAccount();
-  if (s !== session || !s.items) return;
   const items = s.items;
+  if (s !== session || !items) return;
   // Leave the page alone when there's nothing to do, as on most timed updates.
   if (!options.subscriptions && staleSubreddits(false).length === 0) return;
+  const { signal } = s.abort;
   update(s, { isRefreshing: true });
   // Mutated as feeds arrive and published in batches by scheduleUpdate().
   let feeds = state.feeds;
@@ -169,6 +185,7 @@ async function reloadNow(s: Session, options: { subscriptions: boolean; force: b
   const scheduleUpdate = () => {
     updateTimer ??= setTimeout(() => {
       updateTimer = undefined;
+      if (s !== session) return;
       feeds = withoutUnsubscribed(s, feeds);
       update(s, { feeds: { ...feeds } });
       void items.feeds.setValue(feeds);
@@ -183,17 +200,24 @@ async function reloadNow(s: Session, options: { subscriptions: boolean; force: b
   });
 
   try {
+    // Reddit may be logged in as another account than the one shown, as on
+    // opening with the data of the account last seen. Asking it also reports
+    // a switch, which opens the other account's session.
+    if (!(await isCurrent(s))) return;
+
     if (options.subscriptions) {
       setStatus(s, 'Loading subscriptions…');
       try {
-        const subreddits = (await fetchSubscriptions()).filter((sub) => !s.unsubscribed.has(key(sub.name)));
-        // Switched accounts meanwhile: these may be either's.
-        if (s !== session) return;
+        const fetched = await fetchSubscriptions(signal);
+        // Switched meanwhile, they may be the other account's.
+        if (!(await isCurrent(s))) return;
+        const subreddits = fetched.filter((sub) => !s.unsubscribed.has(key(sub.name)));
         await items.subscriptions.setValue(subreddits);
         const names = new Set(subreddits.map((sub) => key(sub.name)));
         feeds = Object.fromEntries(Object.entries(feeds).filter(([name]) => names.has(name)));
         update(s, { subreddits, feeds });
       } catch (err) {
+        if (signal.aborted) return;
         // Without a fresh list, keep going with the cached one if there is one.
         if (state.subreddits.length === 0 || err instanceof NotLoggedInError) throw err;
         console.warn(err);
@@ -206,11 +230,12 @@ async function reloadNow(s: Session, options: { subscriptions: boolean; force: b
     let failed = 0;
     await forEachConcurrently(stale, CONCURRENT_REQUESTS, async (subreddit) => {
       // Stop on switching accounts, which has subreddits of its own.
-      if (s !== session) return;
+      if (signal.aborted) return;
       try {
-        const posts = await fetchNewPosts(subreddit.name);
+        const posts = await fetchNewPosts(subreddit.name, { signal });
         feeds[key(subreddit.name)] = { fetchedAt: Date.now(), posts };
       } catch (err) {
+        if (signal.aborted) return;
         failed++;
         console.warn(subreddit.name, err);
       }
@@ -220,6 +245,7 @@ async function reloadNow(s: Session, options: { subscriptions: boolean; force: b
     });
 
     clearTimeout(updateTimer);
+    if (signal.aborted || !(await isCurrent(s))) return;
     feeds = withoutUnsubscribed(s, feeds);
     await items.feeds.setValue(feeds);
     update(s, { feeds });
@@ -236,6 +262,7 @@ async function reloadNow(s: Session, options: { subscriptions: boolean; force: b
       true,
     );
   } finally {
+    clearTimeout(updateTimer);
     stopWatching();
     update(s, { isRefreshing: false });
   }
@@ -259,6 +286,7 @@ export function isSubscribed(name: string): boolean {
 export async function setSubscription(name: string, isSubscribedNow: boolean) {
   const s = session;
   await setSubscribed(name, isSubscribedNow);
+  // Switched accounts meanwhile: the new one's list is loaded anew anyway.
   if (!s?.items || s !== session) return;
   if (!isSubscribedNow) {
     s.unsubscribed.add(key(name));

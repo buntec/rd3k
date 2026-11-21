@@ -1,6 +1,6 @@
 import { useMemo, useSyncExternalStore } from 'react';
-import { accountKey, accountName, loadAccount, onAccountChange } from '../account';
-import { adoptUnkeyed, keyFor } from '../accountStorage';
+import { accountName, confirmedAccount, keyOf, loadAccount, onAccountChange, watchAccount } from '../account';
+import { keyFor, moveUnkeyedData } from '../accountStorage';
 
 /** The colors a group can have: those both Badge and Token come in. */
 export const GROUP_COLORS = ['red', 'orange', 'yellow', 'green', 'teal', 'cyan', 'blue', 'purple', 'pink'] as const;
@@ -39,20 +39,35 @@ export interface GroupsState {
   /** Sorted by name, so the order is the same everywhere groups are listed */
   groups: Group[];
   isLoaded: boolean;
+  /**
+   * Whether they can be changed: once loaded, and once Reddit confirmed the
+   * account they're of. Changes made before they load would replace them.
+   */
+  isEditable: boolean;
+  /**
+   * Which account's groups these are, counting switches. Changes name the
+   * session they were started in, and do nothing in another: an Undo of one
+   * account's import must not replace another's groups.
+   */
+  session: number;
 }
 
 /** The groups of one account, or none while logged out */
 interface Session {
+  id: number;
   /** As accountKey() makes it, or null when logged out */
   account: string | null;
   item?: WxtStorageItem<StoredGroups, {}>;
   unwatch?: () => void;
   /** This page's writes that storage is yet to report back */
   pending: Set<number>;
+  /** What to undo or close on switching away, e.g. a toast offering Undo */
+  onEnd: Set<() => void>;
 }
 
-let state: GroupsState = { groups: [], isLoaded: false };
+let state: GroupsState = { groups: [], isLoaded: false, isEditable: false, session: 0 };
 let session: Session | undefined;
+let sessions = 0;
 const listeners = new Set<() => void>();
 let loading: Promise<void> | undefined;
 /** This page, among those writing groups */
@@ -64,9 +79,22 @@ export function useGroups(): GroupsState {
   return useSyncExternalStore(subscribe, () => state);
 }
 
+/** The groups, once the account's are loaded; the state as it is now, outside React */
+export async function loadGroups(): Promise<GroupsState> {
+  await load();
+  return state;
+}
+
+/** The groups as they are now, outside React */
+export function groupsNow(): GroupsState {
+  return state;
+}
+
 function load(): Promise<void> {
   loading ??= (async () => {
     onAccountChange((name) => void open(name));
+    // Editable once Reddit confirms the account, whether or not it changed
+    watchAccount(() => session && publish(session, state.groups, state.isLoaded));
     // The account last seen's groups right away, as they're only stored here
     let name = accountName();
     if (name === undefined) name = (await loadAccount())?.name ?? null;
@@ -77,21 +105,18 @@ function load(): Promise<void> {
 }
 
 async function open(name: string | null) {
-  const account = name && accountKey(name);
+  const account = keyOf(name);
   if (session && session.account === account) return;
-  session?.unwatch?.();
-  const s: Session = { account, pending: new Set() };
+  if (session) end(session);
+  const s: Session = { id: ++sessions, account, pending: new Set(), onEnd: new Set() };
   session = s;
   publish(s, [], false);
   openFilter(account);
-  if (!account) {
-    publish(s, []);
-    return;
-  }
-  await adoptUnkeyedGroups(account);
+  // Logged out, there's nowhere to keep groups: they stay unloaded.
+  if (!account) return;
+  await moveUnkeyedData();
   if (s !== session) return;
   const item = storage.defineItem<StoredGroups>(keyFor(BASE_KEY, account), { fallback: { groups: [] } });
-  s.item = item;
   // Follow changes made in other tabs. Storage reports writes in the order
   // it makes them, ours too, which are shown already.
   s.unwatch = item.watch((value) => {
@@ -104,21 +129,26 @@ async function open(name: string | null) {
     publish(s, value.groups);
   });
   const stored = await item.getValue();
+  if (s !== session) return;
+  // Only now: saving before would replace what's stored.
+  s.item = item;
   // Unless a change reported meanwhile showed later ones
-  if (!state.isLoaded) publish(s, stored.groups);
+  publish(s, state.isLoaded ? state.groups : stored.groups);
 }
 
-/** Gives the account the groups from before each account had its own, and the filter chosen then. */
-async function adoptUnkeyedGroups(account: string) {
-  await adoptUnkeyed(BASE_KEY, account);
-  try {
-    const unkeyed = localStorage.getItem(FILTER_KEY);
-    if (unkeyed === null) return;
-    if (localStorage.getItem(filterKey(account)) === null) localStorage.setItem(filterKey(account), unkeyed);
-    localStorage.removeItem(FILTER_KEY);
-  } catch (err) {
-    console.warn(err);
-  }
+function end(s: Session) {
+  s.unwatch?.();
+  for (const fn of s.onEnd) fn();
+  s.onEnd.clear();
+}
+
+/**
+ * Calls `fn` when the session ends, on switching accounts, e.g. to close a
+ * toast offering Undo, which would do nothing then.
+ */
+export function onSessionEnd(id: number, fn: () => void) {
+  if (session?.id !== id) return fn();
+  session.onEnd.add(fn);
 }
 
 function subscribe(onChange: () => void) {
@@ -129,17 +159,24 @@ function subscribe(onChange: () => void) {
 /** Shows the groups, unless `s` is an account's switched away from. */
 function publish(s: Session, groups: Group[], isLoaded = true) {
   if (s !== session) return;
-  state = { groups: [...groups].sort((a, b) => a.name.localeCompare(b.name)), isLoaded };
+  const isEditable = isLoaded && !!s.item && s.account === keyOf(confirmedAccount()?.name);
+  const sorted = groups === state.groups ? groups : [...groups].sort((a, b) => a.name.localeCompare(b.name));
+  if (sorted === state.groups && isLoaded === state.isLoaded && isEditable === state.isEditable && s.id === state.session) {
+    return;
+  }
+  state = { groups: sorted, isLoaded, isEditable, session: s.id };
   for (const listener of listeners) listener();
 }
 
-function save(groups: Group[]) {
+/**
+ * Stores the groups as changed in session `id`. Returns whether it did: not
+ * after switching accounts, nor before they're editable.
+ */
+function save(id: number, groups: Group[]): boolean {
   const s = session;
-  if (!s) return;
+  const item = s?.item;
+  if (!s || !item || s.id !== id || !state.isEditable) return false;
   publish(s, groups);
-  const { item } = s;
-  // Logged out, there's nowhere to keep them; the page has nothing to group then.
-  if (!item) return;
   const write = ++writes;
   s.pending.add(write);
   item.setValue({ groups: state.groups, writer: { page, write } }).catch(async (err) => {
@@ -151,6 +188,7 @@ function save(groups: Group[]) {
     const stored = await item.getValue();
     if (!s.pending.size) publish(s, stored.groups);
   });
+  return true;
 }
 
 /** Why a name can't be given to a group, if it can't */
@@ -168,28 +206,37 @@ export function unusedColor(): GroupColor {
   return GROUP_COLORS.reduce((best, c) => (uses.get(c)! < uses.get(best)! ? c : best));
 }
 
-export function createGroup(name: string, color: GroupColor, subreddits: string[] = []): Group {
+// Each change names the session it was made in (GroupsState.session) and
+// returns whether it was made.
+
+export function createGroup(session: number, name: string, color: GroupColor, subreddits: string[] = []): boolean {
   const group = { id: crypto.randomUUID(), name: name.trim(), color, subreddits };
-  save([...state.groups, group]);
-  return group;
+  return save(session, [...state.groups, group]);
 }
 
-export function editGroup(id: string, changes: Pick<Group, 'name' | 'color'>) {
-  save(state.groups.map((g) => (g.id === id ? { ...g, ...changes, name: changes.name.trim() } : g)));
+export function editGroup(session: number, id: string, changes: Pick<Group, 'name' | 'color'>): boolean {
+  return save(
+    session,
+    state.groups.map((g) => (g.id === id ? { ...g, ...changes, name: changes.name.trim() } : g)),
+  );
 }
 
-export function deleteGroup(id: string) {
-  save(state.groups.filter((g) => g.id !== id));
+export function deleteGroup(session: number, id: string): boolean {
+  return save(
+    session,
+    state.groups.filter((g) => g.id !== id),
+  );
 }
 
 /** Puts a deleted group back, e.g. on Undo. */
-export function restoreGroup(group: Group) {
-  save([...state.groups.filter((g) => g.id !== group.id), group]);
+export function restoreGroup(session: number, group: Group): boolean {
+  return save(session, [...state.groups.filter((g) => g.id !== group.id), group]);
 }
 
-export function setInGroup(groupId: string, subreddit: string, isIn: boolean) {
+export function setInGroup(session: number, groupId: string, subreddit: string, isIn: boolean): boolean {
   const name = subreddit.toLowerCase();
-  save(
+  return save(
+    session,
     state.groups.map((g) => {
       if (g.id !== groupId || g.subreddits.includes(name) === isIn) return g;
       const subreddits = isIn ? [...g.subreddits, name] : g.subreddits.filter((s) => s !== name);
@@ -199,8 +246,8 @@ export function setInGroup(groupId: string, subreddit: string, isIn: boolean) {
 }
 
 /** Puts back the groups as they were, e.g. on Undo of an import. */
-export function setGroups(groups: Group[]) {
-  save(groups);
+export function setGroups(session: number, groups: Group[]): boolean {
+  return save(session, groups);
 }
 
 /** What a groups file holds: no IDs, which only mean something here */
@@ -269,9 +316,12 @@ export function mergeGroups(groups: Group[], imported: Omit<Group, 'id'>[]): Gro
   return merged;
 }
 
-/** Adds the groups in a file saved by exportGroups. Throws if it isn't one. */
-export function importGroups(text: string) {
-  save(mergeGroups(state.groups, parseGroupsFile(text)));
+/**
+ * Adds the groups in a file saved by exportGroups. Throws if it isn't one;
+ * returns whether it added them, as other changes do.
+ */
+export function importGroups(session: number, text: string): boolean {
+  return save(session, mergeGroups(state.groups, parseGroupsFile(text)));
 }
 
 // The filter is a display setting: in localStorage, so the page has it on
@@ -279,9 +329,8 @@ export function importGroups(text: string) {
 // following other tabs, which can show other groups.
 const FILTER_KEY = 'groupFilter';
 const filterKey = (account: string) => `${FILTER_KEY}:${account}`;
-const initialName = accountName();
 /** The account the filter is of, as accountKey() makes it */
-let filterAccount = initialName && accountKey(initialName);
+let filterAccount = keyOf(accountName());
 let filter = storedFilter(filterAccount);
 const filterListeners = new Set<() => void>();
 
